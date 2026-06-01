@@ -978,35 +978,50 @@ async function loadTrack(){
             initMap();
         }
 
-        const latlngs = points.map(p => [p.lat, p.lon]);
-        const trackLine = L.polyline(latlngs, {
-            color: '#052152',
-            weight: 2
-        }).addTo(map);
-
-        const first = points[0];
-        const last  = points[points.length - 1];
-
         const node = currentNode || nodeCache[fromNodeId] || null;
+        const last = points[points.length - 1];
 
-        const startMarker = L.circleMarker([first.lat, first.lon], {
-            radius: 6,
-            color: 'green',
-            fillColor: 'green',
-            fillOpacity: 1
-        }).addTo(map).bindPopup(node ? makeNodePopup(node) : "Start");
+        // Single-point case (e.g. node opted out of history via
+        // [site] private_history_node_ids): skip the polyline and the
+        // start/end markers, just drop a single current-location pin.
+        if (points.length < 2) {
+            const currentMarker = L.circleMarker([last.lat, last.lon], {
+                radius: 6,
+                color: 'red',
+                fillColor: 'red',
+                fillOpacity: 1
+            }).addTo(map).bindPopup(node ? makeNodePopup(node) : "Latest");
 
-        const endMarker = L.circleMarker([last.lat, last.lon], {
-            radius: 6,
-            color: 'red',
-            fillColor: 'red',
-            fillOpacity: 1
-        }).addTo(map).bindPopup(node ? makeNodePopup(node) : "Latest");
+            markers["__track_end"] = currentMarker;
+            map.setView([last.lat, last.lon], 12);
+        } else {
+            const latlngs = points.map(p => [p.lat, p.lon]);
+            const trackLine = L.polyline(latlngs, {
+                color: '#052152',
+                weight: 2
+            }).addTo(map);
 
-        markers["__track_start"] = startMarker;
-        markers["__track_end"]   = endMarker;
+            const first = points[0];
 
-        map.fitBounds(trackLine.getBounds(), { padding:[20,20] });
+            const startMarker = L.circleMarker([first.lat, first.lon], {
+                radius: 6,
+                color: 'green',
+                fillColor: 'green',
+                fillOpacity: 1
+            }).addTo(map).bindPopup(node ? makeNodePopup(node) : "Start");
+
+            const endMarker = L.circleMarker([last.lat, last.lon], {
+                radius: 6,
+                color: 'red',
+                fillColor: 'red',
+                fillOpacity: 1
+            }).addTo(map).bindPopup(node ? makeNodePopup(node) : "Latest");
+
+            markers["__track_start"] = startMarker;
+            markers["__track_end"]   = endMarker;
+
+            map.fitBounds(trackLine.getBounds(), { padding:[20,20] });
+        }
 
     } catch (err) {
         console.error("Failed to load track:", err);
