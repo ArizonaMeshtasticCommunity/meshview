@@ -336,8 +336,36 @@ async def stats(request):
     )
 
 
+# External graph viewer (mesh-graph) used in place of the built-in graphs.
+MESH_GRAPH_BASE_URL = "https://graphs.azmsh.net"
+
+
+async def _build_mesh_graph_redirect(packet_id):
+    """Construct the mesh-graph URL for a meshview traceroute packet id.
+
+    mesh-graph keys traceroute graphs on the original request packet's id
+    (decoded.request_id for replies/relays, packet.id for the request
+    itself). Reply packets in meshview have a different packet id from the
+    original request, so a naive redirect of the URL packet_id would 404
+    on mesh-graph. Look up the stored mesh packet and prefer request_id
+    when present.
+    """
+    pkt = await store.get_packet(packet_id)
+    trace_id = packet_id
+    if pkt is not None:
+        mesh_packet, _ = decode_payload.decode(pkt)
+        if mesh_packet is not None:
+            req_id = getattr(mesh_packet.decoded, "request_id", 0) or 0
+            if req_id:
+                trace_id = req_id
+    return f"{MESH_GRAPH_BASE_URL}/graph/trace/{trace_id}"
+
+
 @routes.get("/traceroute/{packet_id}")
 async def traceroute_page(request):
+    packet_id = int(request.match_info["packet_id"])
+    raise web.HTTPFound(await _build_mesh_graph_redirect(packet_id))
+
     template = env.get_template("traceroute.html")
     return web.Response(
         text=template.render(),
@@ -349,6 +377,8 @@ async def traceroute_page(request):
 @routes.get("/graph/traceroute/{packet_id}")
 async def graph_traceroute(request):
     packet_id = int(request.match_info['packet_id'])
+    raise web.HTTPFound(await _build_mesh_graph_redirect(packet_id))
+
     traceroutes = list(await store.get_traceroute(packet_id))
 
     packet = await store.get_packet(packet_id)
