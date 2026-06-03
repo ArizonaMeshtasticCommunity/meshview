@@ -38,6 +38,43 @@ _LANG_CACHE = {}
 routes = web.RouteTableDef()
 
 
+def _parse_private_history_node_ids():
+    """Parse [site] private_history_node_ids from config.
+
+    Format: comma-separated Meshtastic hex IDs (`!aabbccdd`). Also accepts
+    decimal or `0x`-prefixed hex for convenience. Nodes in this set have
+    their position history (portnum=3) restricted to just the most recent
+    fix, so the node detail map still pins the current location but the
+    breadcrumb track is suppressed.
+    """
+    site = CONFIG.get("site", {})
+    raw = site.get("private_history_node_ids", "")
+    if not raw:
+        return set()
+    result = set()
+    for value in str(raw).split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            if value.startswith("!"):
+                result.add(int(value[1:], 16))
+            else:
+                result.add(int(value, 0))
+        except ValueError:
+            logger.warning("Invalid node id in site.private_history_node_ids: %s", value)
+    return result
+
+
+PRIVATE_HISTORY_NODE_IDS = _parse_private_history_node_ids()
+if PRIVATE_HISTORY_NODE_IDS:
+    logger.info(
+        "Position history hidden for %d node(s): %s",
+        len(PRIVATE_HISTORY_NODE_IDS),
+        ", ".join(f"!{n:08x}" for n in sorted(PRIVATE_HISTORY_NODE_IDS)),
+    )
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
     phi1 = math.radians(lat1)
@@ -219,6 +256,15 @@ async def api_packets(request):
         contains_for_query = contains
         if portnum == PortNum.TEXT_MESSAGE_APP and contains:
             contains_for_query = None
+
+        # Suppress position history for nodes that opted out. Cap at the
+        # single most recent fix so map markers still work but no track
+        # polyline is drawn.
+        if (
+            portnum == PortNum.POSITION_APP
+            and from_node_id in PRIVATE_HISTORY_NODE_IDS
+        ):
+            limit = 1
 
         packets = await store.get_packets(
             from_node_id=from_node_id,
