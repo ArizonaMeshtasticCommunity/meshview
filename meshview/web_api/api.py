@@ -9,8 +9,10 @@ import os
 from aiohttp import web
 from sqlalchemy import func, select
 
+from meshtastic.protobuf.mesh_pb2 import MeshPacket
 from meshtastic.protobuf.portnums_pb2 import PortNum
-from meshview import database, decode_payload, store
+from meshview import database, decode_payload, store, traceroute
+from meshview.cache import TTLCache
 from meshview.__version__ import __version__, _git_revision_short, get_version_info
 from meshview.config import CONFIG
 from meshview.models import DailySnapshot, Node
@@ -36,6 +38,41 @@ _LANG_CACHE = {}
 
 # Create dedicated route table for API endpoints
 routes = web.RouteTableDef()
+
+
+def _config_bool(section: str, key: str, default: bool = False) -> bool:
+    return str(CONFIG.get(section, {}).get(key, default)).lower() in ("1", "true", "yes", "on")
+
+
+def _config_int(section: str, key: str, default: int = 0) -> int:
+    try:
+        return int(CONFIG.get(section, {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _cache_ttl(key, default):
+    """Read a cache TTL (seconds) from [cache] in config, falling back to default."""
+    try:
+        return float(CONFIG.get("cache", {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Read-through caches for the expensive polled endpoints. TTLs are sized to
+# roughly one client poll interval: long enough that N viewers cost the same as
+# one, short enough that the UI still looks live.
+#
+# Totals get a longer TTL than the graph because they move slowly and are the
+# most expensive thing on the page (a full COUNT over ~3.4M packet_seen rows).
+EDGES_CACHE = TTLCache()
+STATS_CACHE = TTLCache()
+NODES_CACHE = TTLCache()
+
+EDGES_TTL = _cache_ttl("edges_seconds", 15.0)
+STATS_TTL = _cache_ttl("stats_seconds", 30.0)
+COUNT_TTL = _cache_ttl("count_seconds", 60.0)
+NODES_TTL = _cache_ttl("nodes_seconds", 10.0)
 
 
 def _parse_private_history_node_ids():
@@ -73,6 +110,85 @@ if PRIVATE_HISTORY_NODE_IDS:
         len(PRIVATE_HISTORY_NODE_IDS),
         ", ".join(f"!{n:08x}" for n in sorted(PRIVATE_HISTORY_NODE_IDS)),
     )
+
+
+def _config_str(section: str, key: str, default: str = "") -> str:
+    value = CONFIG.get(section, {}).get(key, default)
+    return str(value) if value is not None else default
+
+
+def _cleanup_status_file() -> str:
+    cleanup_logfile = CONFIG.get("logging", {}).get("db_cleanup_logfile", "dbcleanup.log")
+    path_without_extension, _ = os.path.splitext(cleanup_logfile)
+    return f"{path_without_extension}.status.json"
+
+
+def _backup_status_file() -> str:
+    cleanup_logfile = CONFIG.get("logging", {}).get("db_cleanup_logfile", "dbcleanup.log")
+    return os.path.join(os.path.dirname(cleanup_logfile), "dbbackup.status.json")
+
+
+def _get_cleanup_health() -> dict:
+    cleanup_health = {
+        "enabled": _config_bool("cleanup", "enabled", False),
+        "days_to_keep": _config_int("cleanup", "days_to_keep", 14),
+        "scheduled_time": (
+            f"{_config_int('cleanup', 'hour', 2):02d}:{_config_int('cleanup', 'minute', 0):02d}"
+        ),
+        "vacuum": _config_bool("cleanup", "vacuum", False),
+        "status": "disabled",
+    }
+
+    if cleanup_health["enabled"]:
+        cleanup_health["status"] = "unknown"
+
+    status_file = _cleanup_status_file()
+    cleanup_health["status_file"] = status_file
+    if not os.path.exists(status_file):
+        return cleanup_health
+
+    try:
+        with open(status_file, encoding="utf-8") as f:
+            last_run = json.load(f)
+    except Exception as e:
+        cleanup_health["status"] = "error"
+        cleanup_health["error"] = f"Unable to read cleanup status: {e}"
+        return cleanup_health
+
+    cleanup_health["status"] = last_run.get("status", cleanup_health["status"])
+    cleanup_health["last_run"] = last_run
+    return cleanup_health
+
+
+def _get_backup_health() -> dict:
+    backup_hour = _config_int("cleanup", "backup_hour", _config_int("cleanup", "hour", 2))
+    backup_minute = _config_int("cleanup", "backup_minute", _config_int("cleanup", "minute", 0))
+    backup_health = {
+        "enabled": _config_bool("cleanup", "backup_enabled", False),
+        "backup_dir": _config_str("cleanup", "backup_dir", "./backups"),
+        "scheduled_time": f"{backup_hour:02d}:{backup_minute:02d}",
+        "status": "disabled",
+    }
+
+    if backup_health["enabled"]:
+        backup_health["status"] = "unknown"
+
+    status_file = _backup_status_file()
+    backup_health["status_file"] = status_file
+    if not os.path.exists(status_file):
+        return backup_health
+
+    try:
+        with open(status_file, encoding="utf-8") as f:
+            last_run = json.load(f)
+    except Exception as e:
+        backup_health["status"] = "error"
+        backup_health["error"] = f"Unable to read backup status: {e}"
+        return backup_health
+
+    backup_health["status"] = last_run.get("status", backup_health["status"])
+    backup_health["last_run"] = last_run
+    return backup_health
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -197,6 +313,8 @@ async def api_packets(request):
             p = Packet.from_model(packet)
             data = {
                 "id": p.id,
+                "storage_id": p.id,
+                "packet_id": p.packet_id,
                 "from_node_id": p.from_node_id,
                 "to_node_id": p.to_node_id,
                 "portnum": int(p.portnum) if p.portnum is not None else None,
@@ -295,6 +413,8 @@ async def api_packets(request):
         for p in ui_packets:
             packet_dict = {
                 "id": p.id,
+                "storage_id": p.id,
+                "packet_id": p.packet_id,
                 "import_time_us": p.import_time_us,
                 "channel": p.channel,
                 "from_node_id": p.from_node_id,
@@ -472,30 +592,46 @@ async def api_stats_count(request):
         and packet_id is None
     )
 
+    # Unfiltered totals are full COUNT(*) scans over ~281k packet and ~3.4M
+    # packet_seen rows. They change by a handful per second and every viewer
+    # asks for the same number, so they are the clearest caching win here.
     if no_filters:
-        total_packets = await store.get_total_packet_count()
-        total_seen = await store.get_total_packet_seen_count()
-        return web.json_response({"total_packets": total_packets, "total_seen": total_seen})
+
+        async def _totals():
+            return {
+                "total_packets": await store.get_total_packet_count(),
+                "total_seen": await store.get_total_packet_seen_count(),
+            }
+
+        return web.json_response(
+            await STATS_CACHE.get_or_compute(("count", "global"), COUNT_TTL, _totals)
+        )
 
     # -------- Case 2: Apply filters → compute totals --------
-    total_packets = await store.get_total_packet_count(
-        period_type=period_type,
-        length=length,
-        channel=channel,
-        from_node=from_node,
-        to_node=to_node,
-    )
+    cache_key = ("count", period_type, length, channel, from_node, to_node, packet_id)
 
-    total_seen = await store.get_total_packet_seen_count(
-        packet_id=packet_id,
-        period_type=period_type,
-        length=length,
-        channel=channel,
-        from_node=from_node,
-        to_node=to_node,
-    )
+    async def _filtered_totals():
+        return {
+            "total_packets": await store.get_total_packet_count(
+                period_type=period_type,
+                length=length,
+                channel=channel,
+                from_node=from_node,
+                to_node=to_node,
+            ),
+            "total_seen": await store.get_total_packet_seen_count(
+                packet_id=packet_id,
+                period_type=period_type,
+                length=length,
+                channel=channel,
+                from_node=from_node,
+                to_node=to_node,
+            ),
+        }
 
-    return web.json_response({"total_packets": total_packets, "total_seen": total_seen})
+    return web.json_response(
+        await STATS_CACHE.get_or_compute(cache_key, COUNT_TTL, _filtered_totals)
+    )
 
 
 @routes.get("/api/snapshots/daily")
@@ -551,9 +687,77 @@ async def api_daily_snapshots(request):
         return web.json_response({"error": "Failed to fetch daily snapshots"}, status=500)
 
 
+async def _build_edges(filter_type):
+    """Build the full edge list for a filter type. Cached by api_edges().
+
+    The node_id filter is deliberately applied by the caller rather than being
+    part of this function: it varies per viewer, and filtering an in-memory
+    list is free compared to rebuilding the graph.
+    """
+    since = datetime.datetime.now() - datetime.timedelta(hours=12)
+
+    edges = {}
+    traceroute_count = 0
+    edges_added_tr = 0
+    edges_added_neighbor = 0
+
+    # --- Traceroute edges ---
+    # Uses the column-only stream rather than Traceroute entities: the ORM
+    # relationships are lazy="joined" three levels deep, which dominated this
+    # endpoint's runtime (~3s of hydration against ~0.1s of SQL).
+    if filter_type in (None, "traceroute"):
+        async for route_blob, done, gateway_node_id, from_node_id, to_node_id in (
+            store.get_traceroute_edge_rows(since)
+        ):
+            traceroute_count += 1
+
+            try:
+                route = decode_payload.decode_payload(PortNum.TRACEROUTE_APP, route_blob)
+            except Exception:
+                continue
+            if route is None:
+                continue
+
+            path = traceroute.forward_path(
+                from_node_id,
+                to_node_id,
+                route.route,
+                done,
+                gateway_node_id,
+            )
+
+            for a, b in traceroute.edges(path):
+                if (a, b) not in edges:
+                    edges[(a, b)] = "traceroute"
+                    edges_added_tr += 1
+
+    # --- Neighbor edges ---
+    if filter_type in (None, "neighbor"):
+        for payload, from_node_id in await store.get_neighbor_edge_rows(PortNum.NEIGHBORINFO_APP):
+            # Packet.payload is a serialized MeshPacket, so the inner payload
+            # has to be unwrapped before it can be read as NeighborInfo.
+            try:
+                mesh_packet = MeshPacket.FromString(payload)
+                neighbor_info = decode_payload.decode_payload(
+                    mesh_packet.decoded.portnum, mesh_packet.decoded.payload
+                )
+            except Exception:
+                continue
+            if neighbor_info is None or not hasattr(neighbor_info, "neighbors"):
+                continue
+
+            for node in neighbor_info.neighbors:
+                edge = (node.node_id, from_node_id)
+                if edge not in edges:
+                    edges[edge] = "neighbor"
+                    edges_added_neighbor += 1
+
+    # Convert to list
+    return [{"from": frm, "to": to, "type": edge_type} for (frm, to), edge_type in edges.items()]
+
+
 @routes.get("/api/edges")
 async def api_edges(request):
-    since = datetime.datetime.now() - datetime.timedelta(hours=12)
     filter_type = request.query.get("type")
 
     # NEW → optional single-node filter
@@ -565,50 +769,9 @@ async def api_edges(request):
         except ValueError:
             return web.json_response({"error": "node_id must be integer"}, status=400)
 
-    edges = {}
-    traceroute_count = 0
-    edges_added_tr = 0
-    edges_added_neighbor = 0
-
-    # --- Traceroute edges ---
-    if filter_type in (None, "traceroute"):
-        async for tr in store.get_traceroutes(since):
-            traceroute_count += 1
-
-            try:
-                route = decode_payload.decode_payload(PortNum.TRACEROUTE_APP, tr.route)
-            except Exception:
-                continue
-            if route is None or tr.packet is None:
-                continue
-
-            path = [tr.packet.from_node_id] + list(route.route)
-            path.append(tr.packet.to_node_id if tr.done else tr.gateway_node_id)
-
-            for a, b in zip(path, path[1:], strict=False):
-                if (a, b) not in edges:
-                    edges[(a, b)] = "traceroute"
-                    edges_added_tr += 1
-
-    # --- Neighbor edges ---
-    if filter_type in (None, "neighbor"):
-        packets = await store.get_packets(portnum=71)
-        for packet in packets:
-            try:
-                _, neighbor_info = decode_payload.decode(packet)
-            except Exception:
-                continue
-
-            for node in neighbor_info.neighbors:
-                edge = (node.node_id, packet.from_node_id)
-                if edge not in edges:
-                    edges[edge] = "neighbor"
-                    edges_added_neighbor += 1
-
-    # Convert to list
-    edges_list = [
-        {"from": frm, "to": to, "type": edge_type} for (frm, to), edge_type in edges.items()
-    ]
+    edges_list = await EDGES_CACHE.get_or_compute(
+        filter_type, EDGES_TTL, lambda: _build_edges(filter_type)
+    )
 
     # NEW → apply node_id filtering
     if node_filter is not None:
@@ -766,6 +929,8 @@ async def health_check(request):
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "version": __version__,
         "git_revision": _git_revision_short,
+        "cleanup": _get_cleanup_health(),
+        "backup": _get_backup_health(),
     }
 
     # Check database connectivity
@@ -895,6 +1060,7 @@ async def api_traceroute(request):
                 "done": tr.done,
                 "forward_hops": forward_list,
                 "reverse_hops": reverse_list,
+                "reverse_complete": traceroute.return_is_complete(route),
             }
         )
 
@@ -905,6 +1071,7 @@ async def api_traceroute(request):
 
     forward_paths = []
     reverse_paths = []
+    forward_complete = set()
     winning_forward_paths = []
     winning_reverse_paths = []
 
@@ -918,11 +1085,11 @@ async def api_traceroute(request):
         if tr["reverse_hops"]:
             reverse_paths.append(r)
 
+        # A response proves the request reached the target, whatever its return trip did.
         if tr["done"]:
-            if tr["forward_hops"]:
-                winning_forward_paths.append(f)
-            if tr["reverse_hops"]:
-                winning_reverse_paths.append(r)
+            forward_complete.add(f)
+            winning_forward_paths.append(f)
+            winning_reverse_paths.append((r, tr["reverse_complete"]))
 
     # Deduplicate
     unique_forward_paths = sorted(set(forward_paths))
@@ -933,30 +1100,26 @@ async def api_traceroute(request):
 
     # Convert for JSON output
     unique_forward_paths_json = [
-        {"path": list(p), "count": forward_counts[p]} for p in unique_forward_paths
+        {"path": list(p), "count": forward_counts[p], "complete": p in forward_complete}
+        for p in unique_forward_paths
     ]
 
     unique_reverse_paths_json = [list(p) for p in unique_reverse_paths]
 
     from_node_id = packet.from_node_id
     to_node_id = packet.to_node_id
+    # Winning paths are only built from responses, which carry the endpoints reversed.
     winning_forward_with_endpoints = []
-    for path in set(winning_forward_paths):
-        full_path = list(path)
-        if from_node_id is not None and (not full_path or full_path[0] != from_node_id):
-            full_path = [from_node_id, *full_path]
-        if to_node_id is not None and (not full_path or full_path[-1] != to_node_id):
-            full_path = [*full_path, to_node_id]
-        winning_forward_with_endpoints.append(full_path)
+    for hops in dict.fromkeys(winning_forward_paths):
+        path = traceroute.forward_path(from_node_id, to_node_id, hops, done=True)
+        if len(path) > 1:
+            winning_forward_with_endpoints.append(path)
 
     winning_reverse_with_endpoints = []
-    for path in set(winning_reverse_paths):
-        full_path = list(path)
-        if to_node_id is not None and (not full_path or full_path[0] != to_node_id):
-            full_path = [to_node_id, *full_path]
-        if from_node_id is not None and (not full_path or full_path[-1] != from_node_id):
-            full_path = [*full_path, from_node_id]
-        winning_reverse_with_endpoints.append(full_path)
+    for hops, complete in winning_reverse_paths:
+        path = traceroute.return_path(from_node_id, to_node_id, hops, complete)
+        if len(path) > 1 and path not in winning_reverse_with_endpoints:
+            winning_reverse_with_endpoints.append(path)
 
     winning_paths_json = {
         "forward": winning_forward_with_endpoints,
@@ -966,12 +1129,17 @@ async def api_traceroute(request):
     # --------------------------------------------
     # Final API output
     # --------------------------------------------
+    initiator, target = traceroute.endpoints(
+        from_node_id, to_node_id, any(tr["done"] for tr in tr_groups)
+    )
     return web.json_response(
         {
             "packet": {
                 "id": packet.id,
                 "from": packet.from_node_id,
                 "to": packet.to_node_id,
+                "initiator": initiator,
+                "target": target,
                 "channel": packet.channel,
             },
             "traceroute_packets": tr_groups,
@@ -1040,33 +1208,35 @@ async def api_stats_top(request):
         query = query.where(Node.channel == channel)
         count_query = count_query.where(Node.channel == channel)
 
-    async with database.async_session() as session:
-        rows = (await session.execute(query)).all()
-        total = (await session.execute(count_query)).scalar() or 0
+    async def _run():
+        async with database.async_session() as session:
+            rows = (await session.execute(query)).all()
+            total = (await session.execute(count_query)).scalar() or 0
 
-    nodes = []
-    for r in rows:
-        avg = r.seen / max(r.sent, 1)
-        nodes.append(
-            {
-                "node_id": r.node_id,
-                "long_name": r.long_name,
-                "short_name": r.short_name,
-                "channel": r.channel,
-                "sent": r.sent,
-                "seen": r.seen,
-                "avg": round(avg, 2),
-            }
-        )
+        nodes = []
+        for r in rows:
+            avg = r.seen / max(r.sent, 1)
+            nodes.append(
+                {
+                    "node_id": r.node_id,
+                    "long_name": r.long_name,
+                    "short_name": r.short_name,
+                    "channel": r.channel,
+                    "sent": r.sent,
+                    "seen": r.seen,
+                    "avg": round(avg, 2),
+                }
+            )
 
-    return web.json_response(
-        {
+        return {
             "total": total,
             "limit": limit,
             "offset": offset,
             "nodes": nodes,
         }
-    )
+
+    cache_key = ("top", period_type, length, channel, limit, offset)
+    return web.json_response(await STATS_CACHE.get_or_compute(cache_key, STATS_TTL, _run))
 
 
 @routes.get("/api/node/{node_id}/qr")
