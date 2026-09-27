@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from meshtastic.protobuf.mesh_pb2 import MeshPacket
 from meshtastic.protobuf.portnums_pb2 import PortNum
-from meshview import database, decode_payload, store
+from meshview import database, decode_payload, store, traceroute
 from meshview.cache import TTLCache
 from meshview.__version__ import __version__, _git_revision_short, get_version_info
 from meshview.config import CONFIG
@@ -38,6 +38,17 @@ _LANG_CACHE = {}
 
 # Create dedicated route table for API endpoints
 routes = web.RouteTableDef()
+
+
+def _config_bool(section: str, key: str, default: bool = False) -> bool:
+    return str(CONFIG.get(section, {}).get(key, default)).lower() in ("1", "true", "yes", "on")
+
+
+def _config_int(section: str, key: str, default: int = 0) -> int:
+    try:
+        return int(CONFIG.get(section, {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _cache_ttl(key, default):
@@ -99,6 +110,85 @@ if PRIVATE_HISTORY_NODE_IDS:
         len(PRIVATE_HISTORY_NODE_IDS),
         ", ".join(f"!{n:08x}" for n in sorted(PRIVATE_HISTORY_NODE_IDS)),
     )
+
+
+def _config_str(section: str, key: str, default: str = "") -> str:
+    value = CONFIG.get(section, {}).get(key, default)
+    return str(value) if value is not None else default
+
+
+def _cleanup_status_file() -> str:
+    cleanup_logfile = CONFIG.get("logging", {}).get("db_cleanup_logfile", "dbcleanup.log")
+    path_without_extension, _ = os.path.splitext(cleanup_logfile)
+    return f"{path_without_extension}.status.json"
+
+
+def _backup_status_file() -> str:
+    cleanup_logfile = CONFIG.get("logging", {}).get("db_cleanup_logfile", "dbcleanup.log")
+    return os.path.join(os.path.dirname(cleanup_logfile), "dbbackup.status.json")
+
+
+def _get_cleanup_health() -> dict:
+    cleanup_health = {
+        "enabled": _config_bool("cleanup", "enabled", False),
+        "days_to_keep": _config_int("cleanup", "days_to_keep", 14),
+        "scheduled_time": (
+            f"{_config_int('cleanup', 'hour', 2):02d}:{_config_int('cleanup', 'minute', 0):02d}"
+        ),
+        "vacuum": _config_bool("cleanup", "vacuum", False),
+        "status": "disabled",
+    }
+
+    if cleanup_health["enabled"]:
+        cleanup_health["status"] = "unknown"
+
+    status_file = _cleanup_status_file()
+    cleanup_health["status_file"] = status_file
+    if not os.path.exists(status_file):
+        return cleanup_health
+
+    try:
+        with open(status_file, encoding="utf-8") as f:
+            last_run = json.load(f)
+    except Exception as e:
+        cleanup_health["status"] = "error"
+        cleanup_health["error"] = f"Unable to read cleanup status: {e}"
+        return cleanup_health
+
+    cleanup_health["status"] = last_run.get("status", cleanup_health["status"])
+    cleanup_health["last_run"] = last_run
+    return cleanup_health
+
+
+def _get_backup_health() -> dict:
+    backup_hour = _config_int("cleanup", "backup_hour", _config_int("cleanup", "hour", 2))
+    backup_minute = _config_int("cleanup", "backup_minute", _config_int("cleanup", "minute", 0))
+    backup_health = {
+        "enabled": _config_bool("cleanup", "backup_enabled", False),
+        "backup_dir": _config_str("cleanup", "backup_dir", "./backups"),
+        "scheduled_time": f"{backup_hour:02d}:{backup_minute:02d}",
+        "status": "disabled",
+    }
+
+    if backup_health["enabled"]:
+        backup_health["status"] = "unknown"
+
+    status_file = _backup_status_file()
+    backup_health["status_file"] = status_file
+    if not os.path.exists(status_file):
+        return backup_health
+
+    try:
+        with open(status_file, encoding="utf-8") as f:
+            last_run = json.load(f)
+    except Exception as e:
+        backup_health["status"] = "error"
+        backup_health["error"] = f"Unable to read backup status: {e}"
+        return backup_health
+
+    backup_health["status"] = last_run.get("status", backup_health["status"])
+    backup_health["last_run"] = last_run
+    return backup_health
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -223,6 +313,8 @@ async def api_packets(request):
             p = Packet.from_model(packet)
             data = {
                 "id": p.id,
+                "storage_id": p.id,
+                "packet_id": p.packet_id,
                 "from_node_id": p.from_node_id,
                 "to_node_id": p.to_node_id,
                 "portnum": int(p.portnum) if p.portnum is not None else None,
@@ -321,6 +413,8 @@ async def api_packets(request):
         for p in ui_packets:
             packet_dict = {
                 "id": p.id,
+                "storage_id": p.id,
+                "packet_id": p.packet_id,
                 "import_time_us": p.import_time_us,
                 "channel": p.channel,
                 "from_node_id": p.from_node_id,
@@ -621,13 +715,18 @@ async def _build_edges(filter_type):
                 route = decode_payload.decode_payload(PortNum.TRACEROUTE_APP, route_blob)
             except Exception:
                 continue
-            if route is None or from_node_id is None:
+            if route is None:
                 continue
 
-            path = [from_node_id] + list(route.route)
-            path.append(to_node_id if done else gateway_node_id)
+            path = traceroute.forward_path(
+                from_node_id,
+                to_node_id,
+                route.route,
+                done,
+                gateway_node_id,
+            )
 
-            for a, b in zip(path, path[1:], strict=False):
+            for a, b in traceroute.edges(path):
                 if (a, b) not in edges:
                     edges[(a, b)] = "traceroute"
                     edges_added_tr += 1
@@ -830,6 +929,8 @@ async def health_check(request):
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "version": __version__,
         "git_revision": _git_revision_short,
+        "cleanup": _get_cleanup_health(),
+        "backup": _get_backup_health(),
     }
 
     # Check database connectivity
@@ -959,6 +1060,7 @@ async def api_traceroute(request):
                 "done": tr.done,
                 "forward_hops": forward_list,
                 "reverse_hops": reverse_list,
+                "reverse_complete": traceroute.return_is_complete(route),
             }
         )
 
@@ -969,6 +1071,7 @@ async def api_traceroute(request):
 
     forward_paths = []
     reverse_paths = []
+    forward_complete = set()
     winning_forward_paths = []
     winning_reverse_paths = []
 
@@ -982,11 +1085,11 @@ async def api_traceroute(request):
         if tr["reverse_hops"]:
             reverse_paths.append(r)
 
+        # A response proves the request reached the target, whatever its return trip did.
         if tr["done"]:
-            if tr["forward_hops"]:
-                winning_forward_paths.append(f)
-            if tr["reverse_hops"]:
-                winning_reverse_paths.append(r)
+            forward_complete.add(f)
+            winning_forward_paths.append(f)
+            winning_reverse_paths.append((r, tr["reverse_complete"]))
 
     # Deduplicate
     unique_forward_paths = sorted(set(forward_paths))
@@ -997,30 +1100,26 @@ async def api_traceroute(request):
 
     # Convert for JSON output
     unique_forward_paths_json = [
-        {"path": list(p), "count": forward_counts[p]} for p in unique_forward_paths
+        {"path": list(p), "count": forward_counts[p], "complete": p in forward_complete}
+        for p in unique_forward_paths
     ]
 
     unique_reverse_paths_json = [list(p) for p in unique_reverse_paths]
 
     from_node_id = packet.from_node_id
     to_node_id = packet.to_node_id
+    # Winning paths are only built from responses, which carry the endpoints reversed.
     winning_forward_with_endpoints = []
-    for path in set(winning_forward_paths):
-        full_path = list(path)
-        if from_node_id is not None and (not full_path or full_path[0] != from_node_id):
-            full_path = [from_node_id, *full_path]
-        if to_node_id is not None and (not full_path or full_path[-1] != to_node_id):
-            full_path = [*full_path, to_node_id]
-        winning_forward_with_endpoints.append(full_path)
+    for hops in dict.fromkeys(winning_forward_paths):
+        path = traceroute.forward_path(from_node_id, to_node_id, hops, done=True)
+        if len(path) > 1:
+            winning_forward_with_endpoints.append(path)
 
     winning_reverse_with_endpoints = []
-    for path in set(winning_reverse_paths):
-        full_path = list(path)
-        if to_node_id is not None and (not full_path or full_path[0] != to_node_id):
-            full_path = [to_node_id, *full_path]
-        if from_node_id is not None and (not full_path or full_path[-1] != from_node_id):
-            full_path = [*full_path, from_node_id]
-        winning_reverse_with_endpoints.append(full_path)
+    for hops, complete in winning_reverse_paths:
+        path = traceroute.return_path(from_node_id, to_node_id, hops, complete)
+        if len(path) > 1 and path not in winning_reverse_with_endpoints:
+            winning_reverse_with_endpoints.append(path)
 
     winning_paths_json = {
         "forward": winning_forward_with_endpoints,
@@ -1030,12 +1129,17 @@ async def api_traceroute(request):
     # --------------------------------------------
     # Final API output
     # --------------------------------------------
+    initiator, target = traceroute.endpoints(
+        from_node_id, to_node_id, any(tr["done"] for tr in tr_groups)
+    )
     return web.json_response(
         {
             "packet": {
                 "id": packet.id,
                 "from": packet.from_node_id,
                 "to": packet.to_node_id,
+                "initiator": initiator,
+                "target": target,
                 "channel": packet.channel,
             },
             "traceroute_packets": tr_groups,
