@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select, text
 from sqlalchemy.engine.url import make_url
 
 from meshview import migrations, models, mqtt_database, mqtt_reader, mqtt_store
@@ -56,16 +56,73 @@ db_lock = asyncio.Lock()
 
 
 # -------------------------
+# WAL checkpointing
+# -------------------------
+async def periodic_wal_checkpoint(interval_seconds: int = 300):
+    """Force a TRUNCATE checkpoint on a fixed interval.
+
+    SQLite's automatic checkpointing is passive: it is skipped whenever any
+    reader holds a read mark. The web process polls on a few-second interval,
+    so in practice a read mark is almost always held and the WAL grows without
+    bound -- it was observed at 704MB against a 631MB database, which puts a
+    ~170k-frame wal-index in front of every single read.
+
+    An explicit checkpoint still yields to readers (busy=1 below), but running
+    it on a schedule means it eventually lands in a quiet moment. Taking the
+    ingest lock keeps this from competing with a write transaction.
+    """
+    consecutive_busy = 0
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+
+        try:
+            async with db_lock:
+                result = await mqtt_database.checkpoint_wal("TRUNCATE")
+
+            if result is None:
+                return  # not SQLite; nothing to do
+
+            busy, wal_pages, reclaimed = result
+
+            if busy:
+                consecutive_busy += 1
+                # Only start complaining once it is clearly not transient.
+                if consecutive_busy in (3, 12) or consecutive_busy % 48 == 0:
+                    cleanup_logger.warning(
+                        f"WAL checkpoint blocked by a reader {consecutive_busy} times in a row "
+                        f"(wal={wal_pages} pages, reclaimed={reclaimed}). "
+                        "The WAL cannot be truncated while a read mark is held."
+                    )
+            else:
+                if consecutive_busy:
+                    cleanup_logger.info(
+                        f"WAL checkpoint succeeded after {consecutive_busy} blocked attempts"
+                    )
+                consecutive_busy = 0
+
+        except Exception as e:
+            cleanup_logger.error(f"Error during WAL checkpoint: {e}")
+
+
+# -------------------------
 # Database backup function
 # -------------------------
-async def backup_database(database_url: str, backup_dir: str = ".") -> None:
+async def backup_database(database_url: str, backup_dir: str = ".", keep: int = 7) -> None:
     """
-    Create a compressed backup of the database file.
+    Create a consistent, compressed backup of the database.
+
+    Uses SQLite's ``VACUUM INTO``, which takes a transactionally consistent
+    snapshot of a live database and writes an already-compacted copy. The
+    previous implementation copied the raw file with shutil while writes were
+    in flight and ignored the -wal file entirely, which produces a torn backup
+    that is missing all un-checkpointed data. Do not reintroduce that.
 
     Args:
         database_url: SQLAlchemy connection string
         backup_dir: Directory to store backups (default: current directory)
     """
+    snapshot_file = None
     try:
         url = make_url(database_url)
         if not url.drivername.startswith("sqlite"):
@@ -87,18 +144,41 @@ async def backup_database(database_url: str, backup_dir: str = ".") -> None:
 
         # Generate backup filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"{db_file.stem}_backup_{timestamp}.db.gz"
-        backup_file = backup_path / backup_filename
+        stem = f"{db_file.stem}_backup_{timestamp}"
+        snapshot_file = backup_path / f"{stem}.db"
+        backup_file = backup_path / f"{stem}.db.gz"
 
         cleanup_logger.info(f"Creating backup: {backup_file}")
 
-        # Copy and compress the database file
-        with open(db_file, 'rb') as f_in:
-            with gzip.open(backup_file, 'wb', compresslevel=9) as f_out:
+        # Prune before writing, so retention frees space for the run about to
+        # happen rather than only for the next one.
+        prune_old_backups(str(backup_path), keep)
+
+        # Need room for the uncompressed snapshot plus its gzip, with headroom.
+        if not check_disk_space(str(backup_path), int(db_file.stat().st_size * 1.6)):
+            return
+
+        # VACUUM INTO refuses to overwrite an existing file.
+        if snapshot_file.exists():
+            snapshot_file.unlink()
+
+        # Consistent snapshot of the live database (read-only wrt the source).
+        # VACUUM cannot run inside a transaction, hence AUTOCOMMIT.
+        async with mqtt_database.engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(text("VACUUM INTO :target"), {"target": str(snapshot_file)})
+
+        snapshot_size = snapshot_file.stat().st_size
+
+        # Compress the snapshot, then drop the intermediate.
+        with open(snapshot_file, 'rb') as f_in:
+            with gzip.open(backup_file, 'wb', compresslevel=6) as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
-        # Get file sizes for logging
-        original_size = db_file.stat().st_size / (1024 * 1024)  # MB
+        snapshot_file.unlink()
+        snapshot_file = None
+
+        original_size = snapshot_size / (1024 * 1024)  # MB
         compressed_size = backup_file.stat().st_size / (1024 * 1024)  # MB
         compression_ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
 
@@ -110,12 +190,67 @@ async def backup_database(database_url: str, backup_dir: str = ".") -> None:
 
     except Exception as e:
         cleanup_logger.error(f"Error creating database backup: {e}")
+    finally:
+        # Never leave a half-written snapshot behind to fill the disk.
+        if snapshot_file is not None and snapshot_file.exists():
+            try:
+                snapshot_file.unlink()
+            except OSError as e:
+                cleanup_logger.warning(f"Could not remove partial snapshot {snapshot_file}: {e}")
+
+
+def prune_old_backups(backup_dir: str, keep: int) -> None:
+    """Delete all but the newest ``keep`` backups.
+
+    Without this the daily job accumulates indefinitely. At ~200MB compressed
+    per run that fills the remaining disk in a matter of weeks, and a full
+    disk breaks ingestion, checkpointing and the backup itself at once.
+
+    keep <= 0 disables pruning.
+    """
+    if keep <= 0:
+        return
+
+    try:
+        backups = sorted(
+            Path(backup_dir).glob("*_backup_*.db.gz"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError as e:
+        cleanup_logger.warning(f"Could not list backups in {backup_dir}: {e}")
+        return
+
+    for stale in backups[keep:]:
+        try:
+            size_mb = stale.stat().st_size / (1024 * 1024)
+            stale.unlink()
+            cleanup_logger.info(f"Pruned old backup: {stale.name} ({size_mb:.2f} MB)")
+        except OSError as e:
+            cleanup_logger.warning(f"Could not remove old backup {stale}: {e}")
+
+
+def check_disk_space(path: str, need_bytes: int) -> bool:
+    """Return True if ``path`` has room for ``need_bytes``, logging if not."""
+    try:
+        free = shutil.disk_usage(path).free
+    except OSError as e:
+        cleanup_logger.warning(f"Could not check free space on {path}: {e}")
+        return True  # don't block the backup on a stat failure
+
+    if free < need_bytes:
+        cleanup_logger.error(
+            f"Insufficient disk space for backup: {free / 1024**3:.2f} GB free, "
+            f"need ~{need_bytes / 1024**3:.2f} GB. Skipping backup."
+        )
+        return False
+    return True
 
 
 # -------------------------
 # Database backup scheduler
 # -------------------------
-async def daily_backup_at(hour: int = 2, minute: int = 0, backup_dir: str = "."):
+async def daily_backup_at(hour: int = 2, minute: int = 0, backup_dir: str = ".", keep: int = 7):
     while True:
         now = datetime.datetime.now()
         next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -126,7 +261,7 @@ async def daily_backup_at(hour: int = 2, minute: int = 0, backup_dir: str = ".")
         await asyncio.sleep(delay)
 
         database_url = CONFIG["database"]["connection_string"]
-        await backup_database(database_url, backup_dir)
+        await backup_database(database_url, backup_dir, keep)
 
 
 # -------------------------
@@ -213,6 +348,19 @@ async def daily_cleanup_at(
                     )
                     cleanup_logger.info(f"Deleted {result.rowcount} rows from Traceroute")
 
+                    # Traceroute and Packet are deleted on their own
+                    # independent import_time_us cutoffs, so a traceroute
+                    # imported just after its packet can outlive it and be
+                    # left pointing at a row that no longer exists. Sweep
+                    # those up rather than letting them accumulate.
+                    orphan_packets = select(models.Packet.id).where(
+                        models.Packet.id == models.Traceroute.packet_id
+                    )
+                    result = await session.execute(
+                        delete(models.Traceroute).where(~orphan_packets.exists())
+                    )
+                    cleanup_logger.info(f"Deleted {result.rowcount} orphaned Traceroute rows")
+
                     # -------------------------
                     # Node
                     # -------------------------
@@ -223,11 +371,46 @@ async def daily_cleanup_at(
 
                     await session.commit()
 
-                if vacuum_db and mqtt_database.engine.dialect.name == "sqlite":
+                is_sqlite = mqtt_database.engine.dialect.name == "sqlite"
+
+                # Always checkpoint after a bulk delete, whether or not VACUUM
+                # is enabled -- the deletes just wrote a large amount of WAL.
+                if is_sqlite:
+                    result = await mqtt_database.checkpoint_wal("TRUNCATE")
+                    if result:
+                        busy, wal_pages, reclaimed = result
+                        cleanup_logger.info(
+                            f"Post-cleanup WAL checkpoint: busy={busy}, "
+                            f"wal={wal_pages} pages, reclaimed={reclaimed} pages"
+                        )
+                        if busy:
+                            cleanup_logger.warning(
+                                "WAL checkpoint could not truncate (reader active). "
+                                "VACUUM will likely fail for the same reason."
+                            )
+
+                if vacuum_db and is_sqlite:
+                    # VACUUM needs an exclusive lock and rewrites the whole
+                    # file. It is expected to fail while the web process holds
+                    # connections open -- log that plainly instead of letting
+                    # the outer handler swallow it, because a silently failing
+                    # VACUUM is why the database never reclaims space.
                     cleanup_logger.info("Running VACUUM...")
-                    async with mqtt_database.engine.begin() as conn:
-                        await conn.exec_driver_sql("VACUUM;")
-                    cleanup_logger.info("VACUUM completed.")
+                    try:
+                        # engine.begin() opens a transaction; VACUUM cannot run
+                        # inside one. This is a second reason the previous
+                        # implementation never reclaimed space.
+                        async with mqtt_database.engine.connect() as conn:
+                            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                            await conn.exec_driver_sql("VACUUM;")
+                        cleanup_logger.info("VACUUM completed.")
+                    except Exception as e:
+                        cleanup_logger.error(
+                            f"VACUUM FAILED: {e}. Free pages were not reclaimed and the "
+                            "database file will not shrink. This usually means another "
+                            "process holds an open connection. Run VACUUM offline, or use "
+                            "'VACUUM INTO' to produce a compacted copy."
+                        )
                 elif vacuum_db:
                     cleanup_logger.info("VACUUM skipped (not supported for this database).")
 
@@ -311,8 +494,11 @@ async def main():
     backup_dir = CONFIG.get("cleanup", {}).get("backup_dir", "./backups")
     backup_hour = get_int(CONFIG, "cleanup", "backup_hour", cleanup_hour)
     backup_minute = get_int(CONFIG, "cleanup", "backup_minute", cleanup_minute)
+    backup_keep = get_int(CONFIG, "cleanup", "backup_keep", 7)
     snapshot_hour = get_int(CONFIG, "snapshot", "hour", 1)
     snapshot_minute = get_int(CONFIG, "snapshot", "minute", 0)
+
+    checkpoint_seconds = get_int(CONFIG, "database", "wal_checkpoint_seconds", 300)
 
     logger.info(f"Starting MQTT ingestion from {CONFIG['mqtt']['server']}:{CONFIG['mqtt']['port']}")
     if cleanup_enabled:
@@ -321,9 +507,14 @@ async def main():
         )
     if backup_enabled:
         logger.info(
-            f"Daily backups enabled: storing in {backup_dir} at {backup_hour:02d}:{backup_minute:02d}"
+            f"Daily backups enabled: storing in {backup_dir} at "
+            f"{backup_hour:02d}:{backup_minute:02d} (keeping {backup_keep})"
         )
     logger.info(f"Daily snapshots enabled: capturing at {snapshot_hour:02d}:{snapshot_minute:02d}")
+    if checkpoint_seconds > 0:
+        logger.info(f"WAL checkpoint interval: {checkpoint_seconds}s")
+    else:
+        logger.warning("WAL checkpointing is DISABLED; the -wal file will grow without bound")
 
     async with asyncio.TaskGroup() as tg:
         tg.create_task(
@@ -336,9 +527,13 @@ async def main():
             )
         )
 
+        # Keep the WAL bounded. Not optional for SQLite -- see the docstring.
+        if checkpoint_seconds > 0:
+            tg.create_task(periodic_wal_checkpoint(checkpoint_seconds))
+
         # Start backup task if enabled
         if backup_enabled:
-            tg.create_task(daily_backup_at(backup_hour, backup_minute, backup_dir))
+            tg.create_task(daily_backup_at(backup_hour, backup_minute, backup_dir, backup_keep))
 
         # Start cleanup task if enabled (waits for backup if both run at same time)
         if cleanup_enabled:

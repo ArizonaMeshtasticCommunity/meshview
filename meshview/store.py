@@ -9,6 +9,11 @@ from meshview.models import Node, Packet, PacketSeen, Traceroute
 
 logger = logging.getLogger(__name__)
 
+# Default lookback applied to payload substring search when the caller did not
+# supply one. Matches the retention window, so a search still covers everything
+# in the database while remaining index-bounded rather than open-ended.
+CONTAINS_SEARCH_WINDOW_DAYS = 14
+
 
 async def get_node(node_id):
     async with database.async_session() as session:
@@ -65,8 +70,19 @@ async def get_packets(
         if after is not None:
             conditions.append(models.Packet.import_time_us > after)
 
-        # Case-insensitive substring search on payload (BLOB → TEXT)
+        # Case-insensitive substring search on payload (BLOB → TEXT).
+        #
+        # This cannot use an index -- it is a leading-wildcard LIKE over a
+        # ~600MB blob column, so it reads every candidate row. Bound it with a
+        # time window so the import_time_us index limits what gets scanned;
+        # without one, a single search request scans the entire table.
         if contains:
+            if after is None:
+                default_window = timedelta(days=CONTAINS_SEARCH_WINDOW_DAYS)
+                now_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)  # noqa: UP017
+                after = now_us - int(default_window.total_seconds() * 1_000_000)
+                conditions.append(models.Packet.import_time_us > after)
+
             contains_lower = f"%{contains.lower()}%"
             payload_text = cast(models.Packet.payload, Text)
             conditions.append(func.lower(payload_text).like(contains_lower))
@@ -154,6 +170,60 @@ async def get_traceroutes(since):
         stream = await session.stream_scalars(stmt)
         async for tr in stream:
             yield tr
+
+
+async def get_traceroute_edge_rows(since, limit: int = 100_000):
+    """Stream the minimum needed to build the /api/edges graph.
+
+    Deliberately NOT an ORM entity query. ``Traceroute.packet`` is
+    lazy="joined", and ``Packet.from_node`` / ``Packet.to_node`` are joined as
+    well, so selecting Traceroute entities fans out to a four-table join and
+    hydrates four objects per row -- for ~24k rows in a 12h window that is
+    ~3s of pure Python, against ~0.1s of SQL. The edge builder only needs five
+    scalars, so select exactly those.
+
+    Yields (route, done, gateway_node_id, from_node_id, to_node_id).
+    """
+    if isinstance(since, datetime):
+        since_us = int(since.timestamp() * 1_000_000)
+    else:
+        since_us = int(since)
+
+    async with database.async_session() as session:
+        stmt = (
+            select(
+                Traceroute.route,
+                Traceroute.done,
+                Traceroute.gateway_node_id,
+                Packet.from_node_id,
+                Packet.to_node_id,
+            )
+            .join(Packet, Packet.id == Traceroute.packet_id)
+            .where(Traceroute.import_time_us > since_us)
+            .order_by(Traceroute.import_time_us)
+            .limit(limit)
+        )
+        stream = await session.stream(stmt)
+        async for row in stream:
+            yield row
+
+
+async def get_neighbor_edge_rows(portnum: int, limit: int = 5000):
+    """Payloads for neighbor-info packets, without ORM entity hydration.
+
+    Mirrors get_traceroute_edge_rows: /api/edges only needs the payload blob
+    and the sending node, not a fully populated Packet with both Node
+    relationships attached.
+    """
+    async with database.async_session() as session:
+        stmt = (
+            select(Packet.payload, Packet.from_node_id)
+            .where(Packet.portnum == portnum)
+            .order_by(Packet.import_time_us.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return result.all()
 
 
 async def get_mqtt_neighbors(since):

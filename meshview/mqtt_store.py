@@ -143,44 +143,46 @@ async def process_envelope(topic, env):
 
     async with mqtt_database.async_session() as session:
         # --- Packet insert with ON CONFLICT DO NOTHING
-        result = await session.execute(select(Packet).where(Packet.id == env.packet.id))
-        packet = result.scalar_one_or_none()
-        if not packet:
-            now_us = int(time.time() * 1_000_000)
-            packet_values = {
-                "id": env.packet.id,
-                "portnum": env.packet.decoded.portnum,
-                "from_node_id": getattr(env.packet, "from"),
-                "to_node_id": env.packet.to,
-                "payload": env.packet.SerializeToString(),
-                "import_time_us": now_us,
-                "channel": env.channel_id,
-            }
-            dialect = session.get_bind().dialect.name
-            stmt = None
+        #
+        # No pre-SELECT: the ON CONFLICT DO NOTHING below already makes this
+        # idempotent, so looking the row up first was a second round trip that
+        # could only ever confirm what the insert handles anyway. The fallback
+        # branch (neither sqlite nor postgres) still needs its own guard.
+        now_us = int(time.time() * 1_000_000)
+        packet_values = {
+            "id": env.packet.id,
+            "portnum": env.packet.decoded.portnum,
+            "from_node_id": getattr(env.packet, "from"),
+            "to_node_id": env.packet.to,
+            "payload": env.packet.SerializeToString(),
+            "import_time_us": now_us,
+            "channel": env.channel_id,
+        }
+        dialect = session.get_bind().dialect.name
+        stmt = None
 
-            if dialect == "sqlite":
-                stmt = (
-                    sqlite_insert(Packet)
-                    .values(**packet_values)
-                    .on_conflict_do_nothing(index_elements=["id"])
-                )
-            elif dialect == "postgresql":
-                stmt = (
-                    pg_insert(Packet)
-                    .values(**packet_values)
-                    .on_conflict_do_nothing(index_elements=["id"])
-                )
+        if dialect == "sqlite":
+            stmt = (
+                sqlite_insert(Packet)
+                .values(**packet_values)
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+        elif dialect == "postgresql":
+            stmt = (
+                pg_insert(Packet)
+                .values(**packet_values)
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
 
-            if stmt is not None:
-                await session.execute(stmt)
-            else:
-                try:
-                    async with session.begin_nested():
-                        session.add(Packet(**packet_values))
-                        await session.flush()
-                except IntegrityError:
-                    pass
+        if stmt is not None:
+            await session.execute(stmt)
+        else:
+            try:
+                async with session.begin_nested():
+                    session.add(Packet(**packet_values))
+                    await session.flush()
+            except IntegrityError:
+                pass
 
         # --- PacketSeen insert with conflict-safe handling
 

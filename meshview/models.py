@@ -59,6 +59,11 @@ class Packet(Base):
         Index("idx_packet_to_node_id", "to_node_id"),
         Index("idx_packet_import_time_us", desc("import_time_us")),
         Index("idx_packet_from_node_time_us", "from_node_id", desc("import_time_us")),
+        # portnum and channel are filter columns on hot endpoints (/api/edges
+        # neighbor lookup, /api/packets, /api/stats) but were previously
+        # unindexed, forcing a full scan of the packet table.
+        Index("idx_packet_portnum_time_us", "portnum", desc("import_time_us")),
+        Index("idx_packet_channel", "channel"),
     )
 
 
@@ -85,6 +90,9 @@ class PacketSeen(Base):
         # Index for /top endpoint performance - JOIN on packet_id
         Index("idx_packet_seen_packet_id", "packet_id"),
         Index("idx_packet_seen_import_time_us", "import_time_us"),
+        # Per-node time-window lookups (node detail pages) would otherwise use
+        # idx_packet_seen_node_id and then filter ~3.4M rows by time.
+        Index("idx_packet_seen_node_time_us", "node_id", "import_time_us"),
     )
 
 
@@ -105,6 +113,11 @@ class Traceroute(Base):
     __table_args__ = (
         Index("idx_traceroute_packet_id", "packet_id"),
         Index("idx_traceroute_import_time_us", "import_time_us"),
+        # NOTE: deliberately no unique index on (packet_id, gateway_node_id,
+        # route). Exact duplicates run ~2.9% of rows, but route blobs average
+        # 61 bytes, so the unique index would cost ~46MB to reclaim ~1.6MB.
+        # Duplicates are bounded by the nightly retention cleanup rather than
+        # accumulating, so there is nothing to prevent.
     )
 
 
