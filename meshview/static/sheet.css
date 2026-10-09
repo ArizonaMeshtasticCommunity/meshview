@@ -1,0 +1,255 @@
+/* Meshview sheets: the shared look of the dialogs opened from the map's
+   Toggles and Visual Accessibility buttons (tuck.js, colorfilter.js).
+   Loaded by base.html whenever a page opts in to either feature.
+
+   A dark grouped-list sheet in the style of a phone's settings: a header with a
+   close button, rounded cards of rows, checkmarks for single choices, switches
+   with on/off marks, segmented choices and sliders. Colours were picked for
+   WCAG 2.1 AA contrast on the #000 / #1c1c1e surfaces (ratios noted inline). */
+
+dialog.mv-sheet {
+    width: min(420px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    padding: 0 0 14px;
+    border: 0;
+    border-radius: 18px;
+    background: #000;
+    color: #fff;
+    overflow: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .6);
+    font-size: 1rem;               /* follows the reader's browser font size */
+}
+dialog.mv-sheet::backdrop {
+    background: rgba(0, 0, 0, .35);   /* light, so the page shows behind */
+}
+
+.mv-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 12px 8px 18px;
+}
+.mv-sheet-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+.mv-sheet-close {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    padding: 6px;
+    border: 0;
+    border-radius: 50%;
+    background: #2c2c2e;
+    color: #fff;
+    cursor: pointer;
+}
+.mv-sheet-close svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.mv-sheet-close:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+/* group heading above a card, like a settings list section title */
+.mv-sheet-section {
+    margin: 18px 16px 6px 28px;
+    color: #a1a1a6;          /* 8.2:1 on #000 */
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.mv-sheet-card {
+    margin: 12px 12px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 14px;
+    background: #1c1c1e;
+    overflow: hidden;
+}
+.mv-sheet-section + .mv-sheet-card {
+    margin-top: 0;
+}
+.mv-sheet-row {
+    display: flex;
+    flex-wrap: wrap;               /* a segmented control drops below its label when space runs out */
+    align-items: center;
+    gap: 8px 12px;
+    min-height: 52px;
+    margin: 0;
+    padding: 10px 16px;
+    cursor: pointer;
+}
+.mv-sheet-card .mv-sheet-row + .mv-sheet-row {
+    border-top: 1px solid #38383a;
+}
+.mv-sheet-text {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.mv-sheet-name {
+    flex: 1 1 auto;
+}
+.mv-sheet-sub {
+    color: #a1a1a6;          /* 6.6:1 on #1c1c1e */
+    font-size: .85rem;
+}
+
+/* Single choice: the radio is visually hidden, a checkmark shows the choice,
+   the whole row is the hit target. */
+.mv-sheet-row input[type="radio"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+.mv-sheet-check {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    color: #409cff;          /* 6.0:1 on #1c1c1e */
+    visibility: hidden;
+}
+.mv-sheet-row input[type="radio"]:checked ~ .mv-sheet-check {
+    visibility: visible;
+}
+/* Keyboard focus on a row's (hidden) radio or switch outlines the row; a mouse
+   click does not. Browsers without :has() fall back to :focus-within. */
+.mv-sheet-row:has(:focus-visible) {
+    outline: 2px solid #fff;
+    outline-offset: -4px;
+    border-radius: 10px;
+}
+@supports not selector(:has(*)) {
+    .mv-sheet-row:focus-within {
+        outline: 2px solid #fff;
+        outline-offset: -4px;
+        border-radius: 10px;
+    }
+}
+
+/* Switch (Bootstrap form-switch), recoloured, with on/off marks inside the
+   track: a line when on, a ring when off, so the state does not rely on colour
+   alone (WCAG 1.4.1). Layer 1 is the thumb, layer 2 the mark. */
+.mv-sheet .form-switch {
+    flex: 0 0 auto;
+    padding: 0;
+    margin: 0;
+    min-height: 0;
+}
+.mv-sheet .form-switch .form-check-input {
+    float: none;
+    width: 3.1em;
+    height: 1.75em;
+    margin: 0;
+    cursor: pointer;
+    border: 0;
+    background-color: #39393d;
+    background-repeat: no-repeat;
+    background-image:
+        url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3.3' fill='%23fff'/%3e%3c/svg%3e"),
+        url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3e%3ccircle cx='5' cy='5' r='3.6' fill='none' stroke='%23c7c7cc' stroke-width='1.4'/%3e%3c/svg%3e");
+    background-size: auto 100%, .62em .62em;
+    background-position: left center, right .5em center;
+    transition: background-color .2s, background-position .15s;
+}
+.mv-sheet .form-switch .form-check-input:checked {
+    background-color: #248a3d;   /* white thumb and mark 4.4:1 (3:1 needed) */
+    background-image:
+        url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3.3' fill='%23fff'/%3e%3c/svg%3e"),
+        url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3e%3cpath d='M5 1.5v7' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'/%3e%3c/svg%3e");
+    background-size: auto 100%, .62em .62em;
+    background-position: right center, left .62em center;
+}
+.mv-sheet .form-switch .form-check-input:focus {
+    box-shadow: none;
+}
+.mv-sheet .form-switch .form-check-input:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+/* Segmented choice between two or three options (radio group). */
+.mv-sheet-seg {
+    display: inline-flex;
+    flex: 0 0 auto;
+    padding: 2px;
+    border-radius: 9px;
+    background: #2c2c2e;
+}
+.mv-sheet-seg label {
+    position: relative;
+    margin: 0;
+    cursor: pointer;
+}
+.mv-sheet-seg input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    margin: 0;
+    cursor: pointer;
+}
+.mv-sheet-seg span {
+    display: block;
+    padding: 4px 12px;
+    border-radius: 7px;
+    font-size: .9rem;
+    color: #ebebf5;
+}
+.mv-sheet-seg input:checked + span {
+    background: #d1d1d6;       /* 9.2:1 against the #2c2c2e track; black text 14:1 */
+    color: #000;
+    font-weight: 600;          /* a second cue besides the fill */
+}
+.mv-sheet-seg input:focus-visible + span {
+    outline: 2px solid #fff;
+    outline-offset: 1px;
+}
+
+/* Sliders */
+.mv-sheet-slider {
+    margin: 16px 12px 0;
+}
+.mv-sheet-slider label {
+    display: block;
+    margin: 0 4px 6px;
+    color: #a1a1a6;
+    font-weight: 600;
+}
+.mv-sheet-slider input[type="range"] {
+    width: 100%;
+    accent-color: #409cff;
+    cursor: pointer;
+}
+
+.mv-sheet-note {
+    margin: 14px 18px 0;
+    color: #a1a1a6;
+    font-size: .8rem;
+}
+
+/* Windows High Contrast: system colours replace the fills, so give the chosen
+   segment a visible frame. */
+@media (forced-colors: active) {
+    .mv-sheet-seg input:checked + span {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+    }
+}
+
+[hidden].mv-sheet-block,
+.mv-sheet-slider[hidden] {
+    display: none;
+}

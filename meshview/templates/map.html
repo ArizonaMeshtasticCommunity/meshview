@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% set tuckable = true %}
+{% set color_filters = true %}
 
 {% block css %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -12,16 +14,122 @@
     .filter-checkbox { margin:0 10px; }
 
     #share-button,
-    #reset-filters-button {
-        padding:5px 15px;border:none;border-radius:4px;font-size:14px;cursor:pointer;color:white;
+    #reset-filters-button,
+    #visual-a11y-button,
+    #view-toggles-button {
+        display:inline-flex;align-items:center;gap:.3em;
+        padding:5px 8px;border:none;border-radius:4px;font-size:14px;cursor:pointer;color:white;
+        transition:padding var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease),
+                   gap var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease),
+                   margin var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease),
+                   background-color .2s;
     }
     #share-button { margin-left:20px; background-color:#4CAF50; }
     #share-button:hover { background-color:#45a049; }
     #share-button:active { background-color:#3d8b40; }
+    #share-button.is-copied,
+    #share-button.is-copied:hover { background-color:#2196F3; }
 
     #reset-filters-button { margin-left:10px; background-color:#f44336; }
     #reset-filters-button:hover { background-color:#da190b; }
     #reset-filters-button:active { background-color:#c41e0d; }
+
+    #visual-a11y-button,
+    #view-toggles-button { margin-left:10px; background-color:#6c757d; }
+    #visual-a11y-button:hover,
+    #view-toggles-button:hover { background-color:#5c636a; }
+    #visual-a11y-button:active,
+    #view-toggles-button:active { background-color:#565e64; }
+
+    /* The button row: when it wraps (phones), the rows keep 6 px between them. */
+    #map-actions { display:flex;flex-wrap:wrap;justify-content:center;align-items:center;row-gap:6px; }
+
+    /* Icons: Flaticon UIcons (bold-straight), drawn in currentColor; credited in
+       the footer. The 8 px padding keeps each button within a few px of its old
+       width, so the row still fits where it used to. */
+    .mv-btn-icon {
+        width:1em;height:1em;flex:0 0 auto;fill:currentColor;
+        transition:width var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease),
+                   height var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease);
+    }
+    /* The label folds away rather than vanishing: its width (measured into
+       --mv-label-w by measureButtonLabels) runs to 0 while it fades, so each
+       button morphs between icon + text and the icon-only square. */
+    .mv-btn-label {
+        display:inline-block;overflow:hidden;white-space:nowrap;text-align:center;
+        max-width:var(--mv-label-w, 20em);
+        transition:max-width var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease),
+                   opacity .2s;
+    }
+    /* Share: the label is as wide as the wider of its two texts, so the button
+       stays the same size while it says "Link Copied!". */
+    #share-button .mv-btn-label { width:var(--mv-label-w, auto); }
+    .mv-btn-label.is-feedback { max-width:none; }
+
+    /* Footer tucked: the buttons become icon-only squares. The label stays in the
+       DOM, visually hidden, so the accessible name is unchanged. z-index lifts
+       them over the map legend on narrow screens. */
+    html.mv-tuck-bottom #share-button,
+    html.mv-tuck-bottom #reset-filters-button,
+    html.mv-tuck-bottom #visual-a11y-button,
+    html.mv-tuck-bottom #view-toggles-button {
+        position:relative;z-index:501;padding:5px 6.5px;gap:0;
+    }
+    /* A white icon alone needs 3:1 (WCAG 1.4.11); the stock green gives 2.8:1. */
+    html.mv-tuck-bottom #share-button { margin-left:8px; background-color:#2e7d32; }
+    html.mv-tuck-bottom #share-button:hover { background-color:#276b2b; }
+    html.mv-tuck-bottom #share-button.is-copied { background-color:#2196F3; }
+    html.mv-tuck-bottom #reset-filters-button,
+    html.mv-tuck-bottom #visual-a11y-button,
+    html.mv-tuck-bottom #view-toggles-button { margin-left:6px; }
+    html.mv-tuck-bottom .mv-btn-icon { width:18px;height:18px; }
+    /* still in the DOM and in the accessibility tree: the name is unchanged */
+    html.mv-tuck-bottom .mv-btn-label { max-width:0;opacity:0; }
+    /* "Link Copied!" has to be seen even with no visible label: float it above. */
+    html.mv-tuck-bottom #share-button .mv-btn-label.is-feedback {
+        position:absolute;max-width:none;opacity:1;padding:4px 10px;overflow:visible;
+        left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
+        background:#2196F3;color:white;border-radius:4px;font-size:13px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);z-index:1300;
+    }
+
+    /* Toggles: Hide filters. The bar keeps the row's 10 px gap so the stud on its
+       edge stays clear of the buttons. */
+    html.mv-hide-filters #filter-container { display:none; }
+    html.mv-hide-filters #site-bottom { padding-top:20px; }
+
+    /* The legend is pinned 30 px above the first screen's bottom. When that
+       would put it on the controls under the map (a bar is tucked and the page
+       fits the screen, or a narrow screen), it rides in the footer bar as a row
+       instead; see placeMapLegend(). */
+    #map-legend.mv-legend-inbar {
+        position:static !important;
+        display:flex;flex-wrap:wrap;justify-content:center;align-items:center;column-gap:1.5em;
+        padding:10px 0 0;font-size:13px;line-height:1.35;
+    }
+    #map-legend.mv-legend-inbar > div { margin-top:0 !important; }
+
+    @media (prefers-reduced-motion: reduce) {
+        #share-button, #reset-filters-button, #visual-a11y-button, #view-toggles-button,
+        .mv-btn-icon, .mv-btn-label { transition:none; }
+    }
+
+    /* Transparent bars (Visual Accessibility): the map runs the full window and
+       the bars float over its top and bottom edges. Leaflet's corner controls and
+       the unmapped-packets panel sit below/above the bars (their heights are kept
+       in --mv-top-h / --mv-bottom-h by fitMapToViewport). */
+    html.mv-glass-on #map-wrapper { height:100vh;height:100dvh; }
+    html.mv-glass-on .leaflet-top { top:var(--mv-top-h, 0px); }
+    html.mv-glass-on .leaflet-bottom { bottom:var(--mv-bottom-h, 0px); }
+    html.mv-glass-on #unmapped-packets { bottom:calc(30px + var(--mv-bottom-h, 0px)); }
+
+    /* Animated tuck: the map changes height alongside the bars, on the same curve. */
+    html.mv-tuck-animating #map-wrapper {
+        transition:height var(--mv-tuck-time, .32s) var(--mv-tuck-ease, ease);
+    }
+
+    /* Flaticon attribution on the "Visit Meshview on GitHub" line. */
+    #site-foot-line { display:flex;flex-wrap:wrap;justify-content:center;column-gap:.4em; }
 
     .blinking-tooltip {
         background: white;
@@ -125,6 +233,13 @@
     </div>
 </div>
 
+{% endblock %}
+
+{# The filters, the buttons and the page script live in base.html's footer bar,
+   so tucking the footer can compact them together. Their order is unchanged. #}
+{% block credits %}<span class="mv-credits"><span aria-hidden="true">&middot; </span>Uicons by <a href="https://www.flaticon.com/uicons">Flaticon</a></span>{% endblock %}
+
+{% block bottom %}
 <div id="filter-container">
     <input type="checkbox" class="filter-checkbox" id="filter-routers-only">
     <span data-translate-lang="show_routers_only">Show Routers Only</span>
@@ -132,13 +247,24 @@
     <span data-translate-lang="show_mqtt_only">Show MQTT Gateways Only</span>
 </div>
 
-<div style="text-align:center;margin-top:5px;">
-    <button id="share-button" onclick="shareCurrentView()" data-translate-lang="share_view">
-        🔗 Share This View
+<div id="map-actions" style="text-align:center;margin-top:5px;">
+    <button id="share-button" type="button" onclick="shareCurrentView()">
+        <svg class="mv-btn-icon" viewBox="0 0 300 300" aria-hidden="true" focusable="false"><path d="M175 237H213V300H0V131Q0 113 13.0 100.5Q26 88 44 88H91Q77 104 75 125H44Q41 125 39.5 127.0Q38 129 38 131V262H175ZM291 84 207 0 180 26 241 88H144Q126 88 113.0 100.5Q100 113 100 131V212H138V131Q138 129 139.5 127.0Q141 125 144 125H241L180 186L207 213L291 129Q300 120 300.0 107.0Q300 94 291 84Z"/></svg>
+        <span class="mv-btn-label" data-translate-lang="share_view">Share This View</span>
     </button>
-    <button id="reset-filters-button" onclick="resetFiltersToDefaults()" data-translate-lang="reset_filters">
-        ↺ Reset Filters To Defaults
+    <button id="reset-filters-button" type="button" onclick="resetFiltersToDefaults()">
+        <svg class="mv-btn-icon" viewBox="0 0 300 300" aria-hidden="true" focusable="false"><path d="M213 69Q213 51 200.0 38.0Q187 25 169 25H44Q26 25 13.0 38.0Q0 51 0 69V95L75 176V228L138 275V176L213 95ZM175 80 106 155 38 80V69Q38 66 39.5 64.0Q41 62 44 62H169Q171 62 173.0 64.0Q175 66 175 69ZM175 237H300V275H175ZM175 175H300V212H175ZM300 112V150H196L230 112Z"/></svg>
+        <span class="mv-btn-label" data-translate-lang="reset_filters">Reset Filters To Defaults</span>
     </button>
+    <button id="visual-a11y-button" type="button" data-colorfilter-open>
+        <svg class="mv-btn-icon" viewBox="0 0 300 300" aria-hidden="true" focusable="false"><path d="M298 143Q293 130 282 114Q262 83 235 63Q197 37 150.0 37.0Q103 37 65 63Q38 83 18 114Q7 131 2 143L0 150L3 157Q7 170 18 186Q38 217 65 237Q103 263 150.0 263.0Q197 263 235 237Q262 217 282 186Q293 169 298 157L300 150ZM150 226Q106 226 73 195Q53 176 40 150Q53 124 73 105Q106 74 150.0 74.0Q194 74 227 105Q247 124 260 150Q247 176 227 195Q194 226 150 226ZM100 150Q100 171 114.5 185.5Q129 200 150.0 200.0Q171 200 185.5 185.5Q200 171 200.0 150.0Q200 129 185.5 114.5Q171 100 150.0 100.0Q129 100 114.5 114.5Q100 129 100 150Z"/></svg>
+        <span class="mv-btn-label" data-translate="cf_title">Visual Accessibility</span>
+    </button>
+    <button id="view-toggles-button" type="button" data-tuck-settings-open>
+        <svg class="mv-btn-icon" viewBox="0 0 300 300" aria-hidden="true" focusable="false"><path d="M134 33Q128 21 117.5 14.5Q107 8 94.5 8.0Q82 8 71.0 14.5Q60 21 55 33H0V70H55Q60 82 71.0 88.5Q82 95 94.5 95.0Q107 95 117.5 88.5Q128 82 134 70H300V33ZM206 106Q193 106 182.5 113.0Q172 120 166 131H0V169H166Q172 180 182.5 187.0Q193 194 205.5 194.0Q218 194 229.0 187.0Q240 180 245 169H300V131H245Q240 120 229.0 113.0Q218 106 206 106ZM94 205Q82 205 71.0 211.5Q60 218 55 230H0V267H55Q60 279 71.0 285.5Q82 292 94.5 292.0Q107 292 117.5 285.5Q128 279 134 267H300V230H134Q128 218 117.5 211.5Q107 205 94 205Z"/></svg>
+        <span class="mv-btn-label" data-translate="tg_title">Toggles</span>
+    </button>
+    <span id="share-status" class="visually-hidden" role="status" aria-live="polite"></span>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -165,6 +291,7 @@ async function loadTranslationsMap() {
         const res  = await fetch(`/api/lang?lang=${lang}&section=map`);
         mapTranslations = await res.json();
         applyTranslationsMap();
+        syncMapButtonTitles();
     } catch (err) {
         console.error("Map translation load failed:", err);
     }
@@ -903,19 +1030,31 @@ function updateNodeVisibility(){
    SHARE / RESET
    ====================================================== */
 
+let shareFeedbackTimer = 0;
+
 function shareCurrentView() {
     const c = map.getCenter();
     const url = `${window.location.origin}/map?lat=${c.lat.toFixed(6)}&lng=${c.lng.toFixed(6)}&zoom=${map.getZoom()}`;
 
     navigator.clipboard.writeText(url).then(()=>{
         const btn = document.getElementById('share-button');
-        const old = btn.textContent;
-        btn.textContent = '✓ ' + (mapTranslations.link_copied || 'Link Copied!');
-        btn.style.backgroundColor = '#2196F3';
+        const label = btn.querySelector('.mv-btn-label');
+        // Only the label text changes, so the icon survives. A second click
+        // inside the 2 s window must not mistake the feedback text for the
+        // original label.
+        if (!shareFeedbackTimer) label.dataset.restore = label.textContent;
+        label.textContent = '✓ ' + (mapTranslations.link_copied || 'Link Copied!');
+        label.classList.add('is-feedback');
+        btn.classList.add('is-copied');
+        document.getElementById('share-status').textContent = label.textContent;
 
-        setTimeout(()=>{
-            btn.textContent = old;
-            btn.style.backgroundColor = '#4CAF50';
+        clearTimeout(shareFeedbackTimer);
+        shareFeedbackTimer = setTimeout(()=>{
+            label.textContent = label.dataset.restore;
+            label.classList.remove('is-feedback');
+            btn.classList.remove('is-copied');
+            document.getElementById('share-status').textContent = '';
+            shareFeedbackTimer = 0;
         }, 2000);
     });
 }
@@ -929,6 +1068,166 @@ function resetFiltersToDefaults(){
     saveFiltersToLocalStorage();
     updateNodeVisibility();
 }
+
+/* ======================================================
+   TUCKED HEADER / FOOTER (tuck.js)
+   ====================================================== */
+
+/* Does the legend, in its stock pinned place, sit on any control below the map? */
+function legendCoversControls(legend){
+    const lr = legend.getBoundingClientRect();
+    const items = document.querySelectorAll(
+        '#filter-container > *, #site-bottom button[id], #site-foot-line > *, #site-version');
+    for (const el of items) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (r.left < lr.right && r.right > lr.left && r.top < lr.bottom && r.bottom > lr.top) return true;
+    }
+    return false;
+}
+
+/* While a bar is tucked, or whenever its stock place would cover the controls,
+   the legend rides in the footer bar (CSS above). Otherwise it stays right after
+   the map, where the stock rules apply. */
+function placeMapLegend(tucked){
+    const legend = document.getElementById('map-legend');
+    const wrap = document.getElementById('map-wrapper');
+    const bar = document.getElementById('site-bottom');
+    const filters = document.getElementById('filter-container');
+    if (!legend || !bar || !filters) return;
+
+    let inBar = tucked || document.documentElement.classList.contains('mv-glass-on');
+    if (!inBar) {
+        legend.classList.remove('mv-legend-inbar');           /* try the stock place */
+        if (legend.previousElementSibling !== wrap) wrap.after(legend);
+        inBar = legendCoversControls(legend);
+    }
+    legend.classList.toggle('mv-legend-inbar', inBar);
+    if (inBar && legend.parentNode !== bar) bar.insertBefore(legend, filters);
+    else if (!inBar && legend.parentNode === bar) wrap.after(legend);
+}
+
+/* The map's stock height (the stylesheet's rule for #map-wrapper), read from a
+   hidden probe so measuring never touches the map or a running transition. */
+let mapStockProbe = null;
+function stockMapHeight(){
+    if (!mapStockProbe) {
+        let rule = '';
+        for (const sheet of document.styleSheets) {
+            let rules;
+            try { rules = sheet.cssRules; } catch (_e) { continue; }     /* cross-origin */
+            for (const r of rules) {
+                if (r.selectorText === '#map-wrapper' && r.style && r.style.height) rule = r.style.height;
+            }
+        }
+        mapStockProbe = document.createElement('div');
+        mapStockProbe.setAttribute('aria-hidden', 'true');
+        mapStockProbe.style.cssText =
+            'position:absolute;left:0;top:0;width:0;visibility:hidden;pointer-events:none;';
+        mapStockProbe.style.height = rule || 'calc(100vh - 270px)';
+        document.body.appendChild(mapStockProbe);
+    }
+    return mapStockProbe.offsetHeight;
+}
+
+/* Keep Leaflet in step while the map's height is animating. */
+let mapResizeUntil = 0;
+function followMapResize(ms){
+    const first = mapResizeUntil === 0 || performance.now() > mapResizeUntil;
+    mapResizeUntil = performance.now() + ms;
+    if (!first) return;
+    const step = () => {
+        map.invalidateSize({animate:false});
+        if (performance.now() < mapResizeUntil) requestAnimationFrame(step);
+        else mapResizeUntil = 0;
+    };
+    requestAnimationFrame(step);
+}
+
+/* Once a bar is tucked, the stock allowance is wrong: size the map to what the
+   bars actually leave, but never smaller than the stock map (on phones the bars
+   are taller than the allowance and the stock map runs past the screen).
+   Untucked, the inline height goes and the stylesheet applies exactly as
+   before. During an animated change the bars are at their final height when
+   this runs, so the map gets its final height and transitions with them. */
+function fitMapToViewport(animating){
+    const wrap = document.getElementById('map-wrapper');
+    const root = document.documentElement;
+    const tucked = root.classList.contains('mv-tuck-top') || root.classList.contains('mv-tuck-bottom');
+    placeMapLegend(tucked);
+
+    if (root.classList.contains('mv-glass-on')) {
+        /* The bars float over the map (CSS above); the map itself is the window. */
+        if (wrap.style.height) wrap.style.height = '';
+        root.style.setProperty('--mv-top-h', document.getElementById('site-top').offsetHeight + 'px');
+        root.style.setProperty('--mv-bottom-h', document.getElementById('site-bottom').offsetHeight + 'px');
+        if (animating) followMapResize(400);
+        else map.invalidateSize({animate:false});
+        return true;
+    }
+    root.style.removeProperty('--mv-top-h');
+    root.style.removeProperty('--mv-bottom-h');
+
+    const stock = stockMapHeight();
+    const chrome = document.body.offsetHeight - wrap.offsetHeight;
+    let target = stock;
+    let height = '';
+    if (tucked) {
+        target = Math.max(240, stock, Math.floor(window.innerHeight - chrome));
+        height = target + 'px';
+    }
+    if (wrap.style.height !== height) wrap.style.height = height;
+
+    if (animating) followMapResize(400);
+    else map.invalidateSize({animate:false});
+    return chrome + target <= window.innerHeight;          /* the final page fits */
+}
+
+/* Each label's natural width, so its fold animates over exactly that width.
+   scrollWidth still reports it while the label is folded to 0. */
+function measureButtonLabels(){
+    document.querySelectorAll('#site-bottom .mv-btn-label').forEach(label=>{
+        if (label.classList.contains('is-feedback')) return;
+        const probe = document.createElement('span');
+        probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:inherit;';
+        label.parentNode.appendChild(probe);
+        probe.textContent = label.textContent;
+        let w = probe.getBoundingClientRect().width;
+        if (label.parentNode.id === 'share-button') {
+            // the feedback text must fit the same width
+            probe.textContent = '\u2713 ' + (mapTranslations.link_copied || 'Link Copied!');
+            w = Math.max(w, probe.getBoundingClientRect().width);
+        }
+        probe.remove();
+        label.style.setProperty('--mv-label-w', Math.ceil(w) + 'px');
+    });
+}
+
+/* With the footer tucked the buttons show only their icon, so give them a tooltip. */
+const MAP_BUTTON_TITLES = {
+    'share-button': ['share_view', 'Share This View'],
+    'reset-filters-button': ['reset_filters', 'Reset Filters To Defaults'],
+    'visual-a11y-button': ['cf_title', 'Visual Accessibility'],
+    'view-toggles-button': ['tg_title', 'Toggles']
+};
+function syncMapButtonTitles(){
+    measureButtonLabels();
+    const tucked = document.documentElement.classList.contains('mv-tuck-bottom');
+    Object.entries(MAP_BUTTON_TITLES).forEach(([id, [key, fallback]])=>{
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        if (tucked) btn.title = mapTranslations[key] || (window._lang && window._lang[key]) || fallback;
+        else btn.removeAttribute('title');
+    });
+}
+
+document.addEventListener('meshview:tuck', (ev)=>{
+    const fits = fitMapToViewport(!!(ev.detail && ev.detail.animating));
+    if (ev.detail) ev.detail.fits = fits;                  /* lets tuck.js keep a scrollbar from flashing */
+    syncMapButtonTitles();
+});
+window.addEventListener('resize', ()=>fitMapToViewport(false));
+document.addEventListener('meshview:glass', ()=>fitMapToViewport(false));
 
 /* ======================================================
    TRANSLATION LOAD

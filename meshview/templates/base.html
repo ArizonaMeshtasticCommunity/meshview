@@ -11,6 +11,21 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
+    {# Opt-in page features: a page turns them on with `set tuckable = true`
+       (header/footer tuck and the Toggles sheet) and `set color_filters = true`
+       (Visual Accessibility) at the top of its template, as map.html does. #}
+    {% if tuckable or color_filters %}
+    <link rel="stylesheet" href="/static/sheet.css">
+    {% endif %}
+    {% if tuckable %}
+    <link rel="stylesheet" href="/static/tuck.css">
+    <script src="/static/tuck.js" defer></script>
+    {% endif %}
+    {% if color_filters %}
+    <link rel="stylesheet" href="/static/colorfilter.css">
+    <script src="/static/colorfilter.js" defer></script>
+    {% endif %}
+
     {% block head %}{% endblock %}
 
     <style>
@@ -44,19 +59,29 @@
 </head>
 
 <body>
+<div id="site-top">
 <br>
 <div style="text-align:center" id="site-header"></div>
 <div style="text-align:center" id="site-message"></div>
 <div style="text-align:center" id="site-menu"></div>
 
 <br>
+</div>
 
 {% block body %}{% endblock %}
 
+<div id="site-bottom">
+{% block bottom %}{% endblock %}
 <br>
+<div id="site-foot">
+<div id="site-foot-line">
 <div style="text-align:center" id="footer" data-translate="footer"></div>
+{% block credits %}{% endblock %}
+</div>
 <div style="text-align:center"><small id="site-version">ver. unknown</small></div>
+</div>
 <br>
+</div>
 
 <script>
 // --- Shared Promises ---

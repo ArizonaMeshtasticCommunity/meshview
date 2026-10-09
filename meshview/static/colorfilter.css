@@ -1,0 +1,330 @@
+/* Meshview colour filters ("Visual Accessibility"). Pairs with colorfilter.js;
+   the dialog's general look comes from sheet.css.
+
+   html.mv-cf-on runs the whole page through the SVG colour matrix. An open
+   sheet (this one or Toggles) sits in the top layer, which is painted outside
+   <html>, so it gets the same filter itself; that is also what makes the
+   preview show the effect. */
+
+html.mv-cf-on,
+html.mv-cf-on dialog.mv-sheet[open] {
+    filter: url(#mv-cf-matrix);
+}
+
+.mv-cf-defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+/* ---- transparent bars ------------------------------------------------------ */
+
+/* html.mv-glass-on: the header and footer float over the map as dark blurred
+   glass. --mv-glass-near is the bar's opacity at the edge facing the map (the
+   slider), --mv-glass-far at the other edge (20 points more opaque); both are
+   set by colorfilter.js. Leaflet's panes stay under 1100, the sheets above. */
+html.mv-glass-on body {
+    overflow: hidden;
+}
+html.mv-glass-on #site-top,
+html.mv-glass-on #site-bottom {
+    position: fixed;
+    left: 0;
+    right: 0;
+    z-index: 1100;
+    background: #000;
+    /* The map behind is mostly pale tiles: besides the blur, the backdrop is
+       darkened so the glass reads dark at every transparency, never milky. */
+    -webkit-backdrop-filter: blur(10px) brightness(.45) saturate(1.2);
+    backdrop-filter: blur(10px) brightness(.45) saturate(1.2);
+}
+html.mv-glass-on #site-top {
+    top: 0;
+    background: linear-gradient(to bottom,
+        rgba(0, 0, 0, var(--mv-glass-far, .7)),
+        rgba(0, 0, 0, var(--mv-glass-near, .5)));
+}
+html.mv-glass-on #site-bottom {
+    bottom: 0;
+    background: linear-gradient(to top,
+        rgba(0, 0, 0, var(--mv-glass-far, .7)),
+        rgba(0, 0, 0, var(--mv-glass-near, .5)));
+}
+/* Light glass: a white tint, the backdrop brightened instead, dark text. */
+html.mv-glass-light #site-top,
+html.mv-glass-light #site-bottom {
+    background: #fff;
+    color: #111;
+    -webkit-backdrop-filter: blur(10px) brightness(1.25) saturate(.9);
+    backdrop-filter: blur(10px) brightness(1.25) saturate(.9);
+}
+html.mv-glass-light #site-top {
+    background: linear-gradient(to bottom,
+        rgba(255, 255, 255, var(--mv-glass-far, .7)),
+        rgba(255, 255, 255, var(--mv-glass-near, .5)));
+}
+html.mv-glass-light #site-bottom {
+    background: linear-gradient(to top,
+        rgba(255, 255, 255, var(--mv-glass-far, .7)),
+        rgba(255, 255, 255, var(--mv-glass-near, .5)));
+}
+html.mv-glass-light #site-top a,
+html.mv-glass-light #site-bottom a {
+    color: #0a58ca;
+}
+
+/* ---- one size for every state ---------------------------------------------- */
+
+/* The sheet keeps the same height whether the filters are off (a single switch)
+   or on (the list and the sliders), so nothing moves under the pointer when the
+   switch is flipped: the controls scroll inside it instead of growing it. */
+dialog.mv-cf {
+    height: min(760px, calc(100vh - 24px));
+    height: min(760px, calc(100dvh - 24px));
+    scrollbar-gutter: stable;      /* a scrollbar appearing must not shift the rows */
+}
+
+/* ---- preview carousel ------------------------------------------------------ */
+
+.mv-cf-preview {
+    background: #1c1c1e;
+    border-bottom: 1px solid #38383a;
+}
+.mv-cf-viewport {
+    overflow: hidden;
+    touch-action: pan-y;
+}
+.mv-cf-track {
+    display: flex;
+    height: 100%;
+    transition: transform .35s cubic-bezier(.4, 0, .2, 1);
+}
+.mv-cf-slide {
+    flex: 0 0 100%;
+    height: 190px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.mv-cf-slide > svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.mv-cf-dotsrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 6px 0 8px;
+}
+.mv-cf-preview-label {
+    color: #a1a1a6;              /* 6.6:1 on #1c1c1e */
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+.mv-cf-dots {
+    display: flex;
+    gap: 4px;
+}
+.mv-cf-dots button {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+}
+.mv-cf-dots button::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #8e8e93;         /* 5.2:1 against #1c1c1e */
+}
+.mv-cf-dots button[aria-current="true"]::before {
+    background: #fff;
+}
+.mv-cf-dots button:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: -2px;
+    border-radius: 50%;
+}
+
+/* slide 2: the page's own channel colours */
+.mv-cf-mapcolors {
+    list-style: none;
+    margin: 0;
+    padding: 0 18px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+    width: 100%;
+    font-size: .9rem;
+}
+.mv-cf-mapcolors li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+.mv-cf-dot {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+}
+.mv-cf-line {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 3px;
+}
+.mv-cf-chan {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* slide 3: colour chart */
+.mv-cf-chart {
+    width: 100%;
+    padding: 0 18px;
+    display: grid;
+    gap: 10px;
+}
+.mv-cf-hues {
+    height: 46px;
+    border-radius: 8px;
+    background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.mv-cf-swatches {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 6px;
+}
+.mv-cf-swatches span {
+    height: 34px;
+    border-radius: 6px;
+}
+.mv-cf-grays {
+    height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #000, #fff);
+}
+
+/* ---- Hue: the track itself is the colour wheel ----------------------------- */
+
+.mv-sheet-slider .mv-cf-hue {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 24px;
+    border-radius: 12px;
+    background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.mv-cf-hue::-webkit-slider-runnable-track {
+    height: 24px;
+    border-radius: 12px;
+    background: transparent;
+}
+.mv-cf-hue::-moz-range-track {
+    height: 24px;
+    border-radius: 12px;
+    background: transparent;
+}
+.mv-cf-hue::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: #fff;
+    border: 0;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .85), 0 2px 6px rgba(0, 0, 0, .5);
+}
+.mv-cf-hue::-moz-range-thumb {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #fff;
+    border: 0;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .85), 0 2px 6px rgba(0, 0, 0, .5);
+}
+.mv-cf-hue:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
+}
+
+/* ---- wide screens: preview beside the controls ----------------------------- */
+
+@media (min-width: 760px) and (min-height: 480px) {
+    dialog.mv-cf {
+        width: min(880px, calc(100vw - 48px));
+        height: min(640px, calc(100vh - 48px));
+        height: min(640px, calc(100dvh - 48px));
+        scrollbar-gutter: auto;
+        display: flex;
+        flex-direction: column;
+        padding-bottom: 0;
+        overflow: hidden;
+    }
+    dialog.mv-cf:not([open]) {
+        display: none;
+    }
+    .mv-cf-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .mv-cf-preview {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-bottom: 0;
+        border-right: 1px solid #38383a;
+    }
+    .mv-cf-viewport {
+        flex: 1 1 auto;
+        min-height: 0;
+    }
+    .mv-cf-slide {
+        height: 100%;
+        min-height: 300px;
+    }
+    .mv-cf-controls {
+        min-height: 0;
+        overflow: auto;
+        scrollbar-gutter: stable;  /* the tallest state fits at 640 px; on shorter
+                                      screens a scrollbar must not shift the rows */
+        padding-bottom: 16px;
+    }
+}
+
+/* Windows High Contrast: background fills are replaced, so draw the dots with
+   borders and mark the current one. */
+@media (forced-colors: active) {
+    .mv-cf-dots button::before {
+        background: transparent;
+        border: 2px solid ButtonText;
+    }
+    .mv-cf-dots button[aria-current="true"]::before {
+        background: Highlight;
+        border-color: Highlight;
+        forced-color-adjust: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mv-cf-track {
+        transition: none;
+    }
+}

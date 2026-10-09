@@ -1,0 +1,260 @@
+/* Meshview "tuck": compact or hide the site header and footer bars to give a
+   page (the map first) more room.
+
+   Pairs with tuck.js. A page opts in with `set tuckable = true` in its template
+   (see base.html). Nothing here applies until tuck.js puts state classes on
+   <html>:
+
+     mv-tuck-top               header (#site-top) tucked, partially
+     mv-tuck-top-complete      ... and completely: only its stud is left
+     mv-tuck-bottom            footer (#site-bottom) tucked, partially
+     mv-tuck-bottom-complete   ... and completely: only the credits are left
+     mv-hide-filters           the page hides its filter row (page CSS)
+     mv-tuck-animating         a change is being animated
+
+   Pages style their own controls against these classes (map.html does for its
+   buttons, filters and legend). Each bar gets a small round stud centred on the
+   edge it shares with the page content; it grows and shows a glyph on hover. */
+
+:root {
+    --mv-tuck-dot:  var(--bs-secondary-color, #adb5bd);
+    --mv-tuck-ink:  var(--bs-body-bg, #212529);
+    --mv-tuck-ring: var(--bs-body-bg, #212529);
+    --mv-tuck-hot:  var(--bs-primary, #0d6efd);
+    --mv-tuck-hot-ink: #fff;
+    --mv-tuck-ease: cubic-bezier(.4, 0, .2, 1);
+    --mv-tuck-time: .32s;
+}
+
+/* ---- the bars -------------------------------------------------------------- */
+
+#site-top,
+#site-bottom {
+    position: relative;
+    /* Own block formatting context: otherwise the first child's top margin (the
+       map's filter row has margin-top:10px) collapses through #site-bottom and
+       moves the bar's top edge, and the stud on it, down onto the filter row.
+       Layout is otherwise unchanged: the margin simply stays inside the bar. */
+    display: flow-root;
+}
+/* The grown stud (15 px radius plus its ring) is centred on the bar's edge, so
+   every bar keeps at least 18 px between that edge and its content. The footer's
+   whole filter row moves down 10 px for it, in every view. */
+#site-bottom {
+    padding-top: 10px;
+}
+
+/* ---- header: partial = smaller title, no message line, links stay ---------- */
+
+html.mv-tuck-top #site-top {
+    padding: 8px 0 18px;            /* stud clearance, see above */
+}
+html.mv-tuck-top #site-top br {
+    display: none;
+}
+html.mv-tuck-top #site-header,
+html.mv-tuck-top #site-menu {
+    font-size: .85rem;
+    line-height: 1.35;
+}
+html.mv-tuck-top #site-message {
+    display: none;
+}
+
+/* header: complete = a thin strip that only carries the stud */
+html.mv-tuck-top-complete #site-top {
+    padding: 0;
+    height: 20px;                   /* the grown stud reaches 15 px up from its edge */
+}
+html.mv-tuck-top-complete #site-top > :not(.mv-tuck) {
+    display: none;
+}
+
+/* ---- footer: partial = link and version on one smaller line ---------------- */
+
+html.mv-tuck-bottom #site-bottom {
+    padding: 18px 0 8px;
+}
+html.mv-tuck-bottom #site-bottom br {
+    display: none;
+}
+html.mv-tuck-bottom #site-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: baseline;
+    column-gap: .5em;
+    font-size: .8rem;
+    line-height: 1.35;
+}
+
+/* footer: complete = only the credits line */
+html.mv-tuck-bottom-complete #site-bottom {
+    padding: 18px 0 6px;
+}
+html.mv-tuck-bottom-complete #site-bottom > :not(.mv-tuck):not(#site-foot),
+html.mv-tuck-bottom-complete #site-version {
+    display: none;
+}
+
+/* ---- animation ------------------------------------------------------------- */
+
+/* tuck.js pins each bar to its old height (and padding) and runs it to the new
+   one. While it runs the content is clipped exactly at the bar's edge, except
+   for a notch around the stud deep and wide enough for the grown stud, its
+   shadow and its focus ring. A clip-path makes the bar a stacking context of its
+   own, which would put the whole bar, stud included, under the map's panes
+   (Leaflet uses z-index 400 to 1000); so the bar is lifted above them while it
+   runs. */
+html.mv-tuck-animating #site-top,
+html.mv-tuck-animating #site-bottom {
+    z-index: 1100;
+}
+html.mv-tuck-animating #site-top {
+    clip-path: polygon(0 0, 100% 0, 100% 100%,
+                       calc(50% + 36px) 100%, calc(50% + 36px) calc(100% + 48px),
+                       calc(50% - 36px) calc(100% + 48px), calc(50% - 36px) 100%,
+                       0 100%);
+}
+html.mv-tuck-animating #site-bottom {
+    clip-path: polygon(0 0, calc(50% - 36px) 0, calc(50% - 36px) -48px,
+                       calc(50% + 36px) -48px, calc(50% + 36px) 0,
+                       100% 0, 100% 100%, 0 100%);
+}
+
+/* While tuck.js measures the end state of a change it pauses the transitions
+   of everything inside the bars, for one synchronous layout (never painted). */
+html.mv-tuck-measuring #site-top *,
+html.mv-tuck-measuring #site-bottom * {
+    transition: none !important;
+}
+
+/* ---- the stud ------------------------------------------------------------- */
+
+.mv-tuck {
+    position: absolute;
+    left: 50%;
+    z-index: 1200;                  /* above Leaflet's panes and controls (<= 1000) */
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    overflow: visible;
+    cursor: pointer;
+    background: var(--mv-tuck-dot);
+    color: var(--mv-tuck-ink);
+    box-shadow: 0 0 0 2px var(--mv-tuck-ring);
+    transition: width .26s var(--mv-tuck-ease),
+                height .26s var(--mv-tuck-ease),
+                background-color .26s,
+                box-shadow .26s;
+}
+/* Centred on the line where the bar meets the page content (the header's
+   bottom edge, the footer's top edge), at every size: it grows around that
+   point. The bars' padding keeps their text clear of it (see above). */
+.mv-tuck-top-stud {
+    top: 100%;
+    transform: translate(-50%, -50%);
+}
+.mv-tuck-bottom-stud {
+    top: 0;
+    transform: translate(-50%, -50%);
+}
+
+/* An invisible hit area makes the small dot easy to hit. It only extends to the
+   sides and toward the page content (the map), never over the bar, so it cannot
+   take clicks meant for menu links or filter checkboxes. */
+.mv-tuck::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    right: -12px;
+}
+.mv-tuck-top-stud::before {
+    top: 50%;
+    bottom: -12px;
+}
+.mv-tuck-bottom-stud::before {
+    top: -12px;
+    bottom: 50%;
+}
+
+.mv-tuck svg {
+    width: 72%;
+    height: 72%;
+    display: block;
+    opacity: 0;
+    transform: scale(.45);
+    transition: opacity .18s .03s, transform .26s var(--mv-tuck-ease);
+}
+.mv-tuck svg path {
+    fill: currentColor;
+}
+
+.mv-tuck:focus-visible {
+    width: 30px;
+    height: 30px;
+    background: var(--mv-tuck-hot);
+    color: var(--mv-tuck-hot-ink);
+    box-shadow: 0 0 0 2px var(--mv-tuck-ring), 0 4px 13px rgba(0, 0, 0, .45);
+}
+.mv-tuck:focus-visible svg {
+    opacity: 1;
+    transform: scale(1);
+}
+/* Only where a pointer can really hover: on touch screens :hover sticks after
+   a tap and would leave the stud grown. */
+@media (hover: hover) {
+    .mv-tuck:hover {
+        width: 30px;
+        height: 30px;
+        background: var(--mv-tuck-hot);
+        color: var(--mv-tuck-hot-ink);
+        box-shadow: 0 0 0 2px var(--mv-tuck-ring), 0 4px 13px rgba(0, 0, 0, .45);
+    }
+    .mv-tuck:hover svg {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+.mv-tuck:focus {
+    outline: none;
+}
+.mv-tuck:focus-visible {
+    outline: 2px solid var(--mv-tuck-hot-ink);
+    outline-offset: 3px;
+}
+
+/* Touch screens have no hover: a ready-sized stud with its glyph. 20 px keeps
+   its bar-side half (10 px) inside the space the bars leave next to the edge. */
+@media (hover: none) {
+    .mv-tuck {
+        width: 20px;
+        height: 20px;
+        background: var(--mv-tuck-hot);
+        color: var(--mv-tuck-hot-ink);
+    }
+    .mv-tuck svg {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+/* Windows High Contrast / forced colours: keep the stud visible on any surface. */
+@media (forced-colors: active) {
+    .mv-tuck {
+        border: 2px solid ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mv-tuck,
+    .mv-tuck svg {
+        transition: none;
+    }
+}
