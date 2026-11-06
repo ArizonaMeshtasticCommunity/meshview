@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     # Core async + networking
-    "aiohttp>=3.11.12,<4.0.0",
+    "aiohttp>=3.14.4,<4.0.0",
     "aiohttp-sse",
     "aiodns>=3.2.0,<4.0.0",
     "aiomqtt>=2.3.0,<3.0.0",
@@ -17,7 +17,7 @@ dependencies = [
     "alembic>=1.14.0,<2.0.0",
     # Serialization / security
     "protobuf>=5.29.3,<6.0.0",
-    "cryptography>=44.0.1,<45.0.0",
+    "cryptography>=50.0.0",
     # Templates
     "Jinja2>=3.1.5,<4.0.0",
     "MarkupSafe>=3.0.2,<4.0.0",
@@ -34,7 +34,7 @@ dev = [
     "seaborn>=0.13.2,<1.0.0",
     "plotly>=6.0.0,<7.0.0",
     # Image support
-    "pillow>=11.1.0,<12.0.0",
+    "pillow>=13.0.0",
     # Debugging / profiling
     "psutil>=7.0.0,<8.0.0",
     "objgraph>=3.6.2,<4.0.0",
