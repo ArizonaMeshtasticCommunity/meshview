@@ -16,13 +16,25 @@
     #reset-filters-button {
         padding:5px 15px;border:none;border-radius:4px;font-size:14px;cursor:pointer;color:white;
     }
-    #share-button { margin-left:20px; background-color:#4CAF50; }
-    #share-button:hover { background-color:#45a049; }
-    #share-button:active { background-color:#3d8b40; }
+    /* Button colors keep white text at 4.5:1 contrast or better. */
+    #share-button { margin-left:20px; background-color:#2e7d32; }
+    #share-button:hover { background-color:#256a29; }
+    #share-button:active { background-color:#1b5e20; }
+    #share-button.copied { background-color:#1565c0; }
 
-    #reset-filters-button { margin-left:10px; background-color:#f44336; }
-    #reset-filters-button:hover { background-color:#da190b; }
-    #reset-filters-button:active { background-color:#c41e0d; }
+    #reset-filters-button { margin-left:10px; background-color:#c62828; }
+    #reset-filters-button:hover { background-color:#b71c1c; }
+    #reset-filters-button:active { background-color:#9a1515; }
+
+    #filter-container label { cursor:pointer; }
+    .channel-swatch {
+        display:inline-block; width:12px; height:12px; border-radius:50%;
+        margin-right:5px; vertical-align:-1px; border:1px solid rgba(255,255,255,0.6);
+    }
+
+    /* Keyboard focus ring for node markers. */
+    path.node-marker:focus { outline:none; }
+    path.node-marker:focus-visible { stroke:#000; stroke-width:3px; }
 
     #share-button, #reset-filters-button {
         display:inline-flex; align-items:center; gap:6px;
@@ -87,6 +99,11 @@
         0% { box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
         50% { box-shadow: 0 4px 14px rgba(255,140,0,0.45); }
         100% { box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+    }
+    /* Reduce motion: draw packet traces as plain lines and skip the pulses. */
+    @media (prefers-reduced-motion: reduce) {
+        .packet-seen-trace { animation:none; stroke-dasharray:none; }
+        .packet-seen-landing, .blinking-tooltip.text-packet { animation:none; }
     }
 
     #map-wrapper {
@@ -174,9 +191,9 @@
 
 <div id="filter-container">
     <input type="checkbox" class="filter-checkbox" id="filter-routers-only">
-    <span data-translate-lang="show_routers_only">Show Routers Only</span>
+    <label for="filter-routers-only" data-translate-lang="show_routers_only">Show Routers Only</label>
     <input type="checkbox" class="filter-checkbox" id="filter-mqtt-only">
-    <span data-translate-lang="show_mqtt_only">Show MQTT Gateways Only</span>
+    <label for="filter-mqtt-only" data-translate-lang="show_mqtt_only">Show MQTT Gateways Only</label>
 </div>
 
 <div id="view-options">
@@ -320,6 +337,8 @@ const portMap = window.PORT_LABEL_MAP;
 const palette = ["#18aa18","#976049","#a5508c","#1898dc","#3a8846","#dc1884",
                  "#b8813d","#b64f35","#408b18","#4c719e","#be379c","#18aa52"];
 
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
 // Okabe-Ito colors that stay distinct with common color vision deficiencies.
 // Yellow is left out because it is the packet blink color.
 const colorblindPalette = ["#E69F00","#56B4E9","#009E73","#0072B2","#D55E00","#CC79A7","#999999"];
@@ -398,8 +417,10 @@ function applyChannelColors(){
         if(!activeBlinks.has(marker)) marker.setStyle({ fillColor: marker.originalColor });
     });
     channelSet.forEach(ch => {
-        const label = document.querySelector(`label[for="filter-channel-${CSS.escape(ch)}"]`);
-        if(label) label.style.color = hashToColor(ch);
+        const swatch = document.querySelector(
+            `label[for="filter-channel-${CSS.escape(ch)}"] .channel-swatch`
+        );
+        if(swatch) swatch.style.backgroundColor = hashToColor(ch);
     });
 }
 
@@ -686,8 +707,27 @@ function renderNodesOnMap(){
             color: "white",
             fillColor: color,
             fillOpacity: 1,
-            weight: 0.7
+            weight: 0.7,
+            className: "node-marker"
         }).addTo(nodeLayer);
+
+        // Let keyboard users Tab to a node and open it with Enter or Space.
+        // The SVG element only exists once the map has a view, so wire it up on "add".
+        const makeFocusable = () => {
+            const el = marker.getElement();
+            if(!el || el.hasAttribute("tabindex")) return;
+            const name = node.long_name || node.short_name || `Node ${node.node_id}`;
+            el.setAttribute("tabindex", "0");
+            el.setAttribute("role", "button");
+            el.setAttribute("aria-label", node.channel ? `${name}, ${node.channel}` : name);
+            el.addEventListener("keydown", e => {
+                if(e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                marker.fire("click");
+            });
+        };
+        marker.on("add", makeFocusable);
+        makeFocusable();
 
         marker.nodeId = node.key;
         marker.originalColor = color;
@@ -1058,10 +1098,10 @@ function blinkNode(marker,longName,portnum,payload){
         const elapsedMs = Date.now() - blinkStart;
         const blinkPeriodMs = elapsedMs >= fastBlinkStartMs ? 250 : 500;
         if(isNodeVisibleForPackets(marker)){
+            // With reduce motion on, hold the highlight steady instead of blinking.
+            const lit = reduceMotion.matches || Math.floor(elapsedMs / blinkPeriodMs)%2===0;
             marker.setStyle({
-                fillColor: Math.floor(elapsedMs / blinkPeriodMs)%2===0
-                    ? blinkColor
-                    : marker.originalColor
+                fillColor: lit ? blinkColor : marker.originalColor
             });
             marker.bringToFront();
         } else {
@@ -1098,10 +1138,15 @@ function createChannelFilters(){
 
         filterContainer.appendChild(cb);
 
+        // A color dot next to plain text keeps the name readable whatever the channel color is.
         const label=document.createElement("label");
         label.htmlFor=cb.id;
-        label.innerText=channel;
-        label.style.color = hashToColor(channel);
+        const swatch=document.createElement("span");
+        swatch.className="channel-swatch";
+        swatch.setAttribute("aria-hidden", "true");
+        swatch.style.backgroundColor = hashToColor(channel);
+        label.appendChild(swatch);
+        label.appendChild(document.createTextNode(channel));
         filterContainer.appendChild(label);
     });
 
@@ -1169,11 +1214,11 @@ function shareCurrentView() {
         const label = btn.querySelector('.btn-label');
         const old = label.textContent;
         label.textContent = mapTranslations.link_copied || 'Link Copied!';
-        btn.style.backgroundColor = '#2196F3';
+        btn.classList.add('copied');
 
         setTimeout(()=>{
             label.textContent = old;
-            btn.style.backgroundColor = '';
+            btn.classList.remove('copied');
         }, 2000);
     });
 }
