@@ -109,7 +109,9 @@
         "no": "Нет",
         "link_copied": "Ссылка скопирована!",
         "legend_traceroute": "Трассировка (со стрелками)",
-        "legend_neighbor": "Сосед"
+        "legend_neighbor": "Сосед",
+        "colorblind_mode": "Цвета для дальтоников",
+        "compact_view": "Компактный вид"
     },
     "stats": {
         "mesh_stats_summary": "Сводка статистики сети (все доступные в базе данных)",

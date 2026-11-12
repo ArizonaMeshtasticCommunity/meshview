@@ -16,13 +16,43 @@
     #reset-filters-button {
         padding:5px 15px;border:none;border-radius:4px;font-size:14px;cursor:pointer;color:white;
     }
-    #share-button { margin-left:20px; background-color:#4CAF50; }
-    #share-button:hover { background-color:#45a049; }
-    #share-button:active { background-color:#3d8b40; }
+    /* Button colors keep white text at 4.5:1 contrast or better. */
+    #share-button { margin-left:20px; background-color:#2e7d32; }
+    #share-button:hover { background-color:#256a29; }
+    #share-button:active { background-color:#1b5e20; }
+    #share-button.copied { background-color:#1565c0; }
 
-    #reset-filters-button { margin-left:10px; background-color:#f44336; }
-    #reset-filters-button:hover { background-color:#da190b; }
-    #reset-filters-button:active { background-color:#c41e0d; }
+    #reset-filters-button { margin-left:10px; background-color:#c62828; }
+    #reset-filters-button:hover { background-color:#b71c1c; }
+    #reset-filters-button:active { background-color:#9a1515; }
+
+    #filter-container label { cursor:pointer; }
+    .channel-swatch {
+        display:inline-block; width:12px; height:12px; border-radius:50%;
+        margin-right:5px; vertical-align:-1px; border:1px solid rgba(255,255,255,0.6);
+    }
+
+    /* Keyboard focus ring for node markers. */
+    path.node-marker:focus { outline:none; }
+    path.node-marker:focus-visible { stroke:#000; stroke-width:3px; }
+
+    #share-button, #reset-filters-button {
+        display:inline-flex; align-items:center; gap:6px;
+    }
+    .btn-icon { width:14px; height:14px; flex:none; }
+
+    #view-options { text-align:center; margin-top:6px; font-size:14px; }
+    #view-options label { margin:0 10px; cursor:pointer; }
+    #view-options input { margin-right:4px; }
+
+    /* Compact view: hide the site title, message and footer to give the map more room. */
+    body.map-compact > br,
+    body.map-compact #site-header,
+    body.map-compact #site-message,
+    body.map-compact #footer,
+    body.map-compact #site-version { display:none; }
+    body.map-compact #site-menu { padding:4px 0; }
+    body.map-compact #map-wrapper { height: calc(100vh - 150px); }
 
     .blinking-tooltip {
         background: white;
@@ -69,6 +99,11 @@
         0% { box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
         50% { box-shadow: 0 4px 14px rgba(255,140,0,0.45); }
         100% { box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+    }
+    /* Reduce motion: draw packet traces as plain lines and skip the pulses. */
+    @media (prefers-reduced-motion: reduce) {
+        .packet-seen-trace { animation:none; stroke-dasharray:none; }
+        .packet-seen-landing, .blinking-tooltip.text-packet { animation:none; }
     }
 
     #map-wrapper {
@@ -156,17 +191,38 @@
 
 <div id="filter-container">
     <input type="checkbox" class="filter-checkbox" id="filter-routers-only">
-    <span data-translate-lang="show_routers_only">Show Routers Only</span>
+    <label for="filter-routers-only" data-translate-lang="show_routers_only">Show Routers Only</label>
     <input type="checkbox" class="filter-checkbox" id="filter-mqtt-only">
-    <span data-translate-lang="show_mqtt_only">Show MQTT Gateways Only</span>
+    <label for="filter-mqtt-only" data-translate-lang="show_mqtt_only">Show MQTT Gateways Only</label>
+</div>
+
+<div id="view-options">
+    <label>
+        <input type="checkbox" id="colorblind-mode">
+        <span data-translate-lang="colorblind_mode">Colorblind-safe colors</span>
+    </label>
+    <label>
+        <input type="checkbox" id="compact-view">
+        <span data-translate-lang="compact_view">Compact view</span>
+    </label>
 </div>
 
 <div style="text-align:center;margin-top:5px;">
-    <button id="share-button" onclick="shareCurrentView()" data-translate-lang="share_view">
-        🔗 Share This View
+    <button id="share-button" onclick="shareCurrentView()">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/>
+            <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>
+        </svg>
+        <span class="btn-label" data-translate-lang="share_view">Share This View</span>
     </button>
-    <button id="reset-filters-button" onclick="resetFiltersToDefaults()" data-translate-lang="reset_filters">
-        ↺ Reset Filters To Defaults
+    <button id="reset-filters-button" onclick="resetFiltersToDefaults()">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7"/>
+            <path d="M3 4v5h5"/>
+        </svg>
+        <span class="btn-label" data-translate-lang="reset_filters">Reset Filters To Defaults</span>
     </button>
 </div>
 
@@ -281,6 +337,13 @@ const portMap = window.PORT_LABEL_MAP;
 const palette = ["#18aa18","#976049","#a5508c","#1898dc","#3a8846","#dc1884",
                  "#b8813d","#b64f35","#408b18","#4c719e","#be379c","#18aa52"];
 
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+// Okabe-Ito colors that stay distinct with common color vision deficiencies.
+// Yellow is left out because it is the packet blink color.
+const colorblindPalette = ["#E69F00","#56B4E9","#009E73","#0072B2","#D55E00","#CC79A7","#999999"];
+let colorblindMode = false;
+
 const channelColorOverrides = new Map();
 
 const colorMap = new Map();
@@ -306,11 +369,87 @@ function hashToColor(str){
     const channel = String(str || "Unknown");
     if(colorMap.has(channel)) return colorMap.get(channel);
 
-    const override = channelColorOverrides.get(normalizeChannelName(channel));
-    const c = override || palette[Math.floor(hashToUnit(channel) * palette.length) % palette.length];
+    let c;
+    if(colorblindMode){
+        // Assign by sorted position so the first channels never share a color.
+        const index = [...channelSet].sort((a, b) => a.localeCompare(b)).indexOf(channel);
+        const slot = index >= 0 ? index : Math.floor(hashToUnit(channel) * colorblindPalette.length);
+        c = colorblindPalette[slot % colorblindPalette.length];
+    } else {
+        const override = channelColorOverrides.get(normalizeChannelName(channel));
+        c = override || palette[Math.floor(hashToUnit(channel) * palette.length) % palette.length];
+    }
     colorMap.set(channel,c);
     return c;
 }
+
+/* ======================================================
+   VIEW OPTIONS (colorblind colors, compact view)
+   ====================================================== */
+
+const VIEW_OPTIONS_KEY = "mapViewOptions";
+
+function loadViewOptions(){
+    try {
+        return JSON.parse(localStorage.getItem(VIEW_OPTIONS_KEY) || "{}") || {};
+    } catch (err) {
+        return {};
+    }
+}
+
+function saveViewOptions(){
+    try {
+        localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({
+            colorblind: colorblindMode,
+            compact: document.body.classList.contains("map-compact")
+        }));
+    } catch (err) {
+        // Storage can be unavailable (private mode); options just won't persist.
+    }
+}
+
+function applyChannelColors(){
+    colorMap.clear();
+    nodes.forEach(n => {
+        const marker = markerById[n.key];
+        if(!marker) return;
+        marker.originalColor = hashToColor(n.channel);
+        if(!activeBlinks.has(marker)) marker.setStyle({ fillColor: marker.originalColor });
+    });
+    channelSet.forEach(ch => {
+        const swatch = document.querySelector(
+            `label[for="filter-channel-${CSS.escape(ch)}"] .channel-swatch`
+        );
+        if(swatch) swatch.style.backgroundColor = hashToColor(ch);
+    });
+}
+
+function setColorblindMode(on){
+    colorblindMode = on;
+    applyChannelColors();
+    saveViewOptions();
+}
+
+function setCompactView(on){
+    document.body.classList.toggle("map-compact", on);
+    map.invalidateSize();
+    saveViewOptions();
+}
+
+(function initViewOptions(){
+    const saved = loadViewOptions();
+    const cb = document.getElementById("colorblind-mode");
+    const compact = document.getElementById("compact-view");
+
+    colorblindMode = saved.colorblind === true;
+    cb.checked = colorblindMode;
+    compact.checked = saved.compact === true;
+    document.body.classList.toggle("map-compact", compact.checked);
+    map.invalidateSize();
+
+    cb.addEventListener("change", () => setColorblindMode(cb.checked));
+    compact.addEventListener("change", () => setCompactView(compact.checked));
+})();
 
 function labelFor(key, fallback){
     return mapTranslations[key] || fallback;
@@ -568,8 +707,27 @@ function renderNodesOnMap(){
             color: "white",
             fillColor: color,
             fillOpacity: 1,
-            weight: 0.7
+            weight: 0.7,
+            className: "node-marker"
         }).addTo(nodeLayer);
+
+        // Let keyboard users Tab to a node and open it with Enter or Space.
+        // The SVG element only exists once the map has a view, so wire it up on "add".
+        const makeFocusable = () => {
+            const el = marker.getElement();
+            if(!el || el.hasAttribute("tabindex")) return;
+            const name = node.long_name || node.short_name || `Node ${node.node_id}`;
+            el.setAttribute("tabindex", "0");
+            el.setAttribute("role", "button");
+            el.setAttribute("aria-label", node.channel ? `${name}, ${node.channel}` : name);
+            el.addEventListener("keydown", e => {
+                if(e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                marker.fire("click");
+            });
+        };
+        marker.on("add", makeFocusable);
+        makeFocusable();
 
         marker.nodeId = node.key;
         marker.originalColor = color;
@@ -940,10 +1098,10 @@ function blinkNode(marker,longName,portnum,payload){
         const elapsedMs = Date.now() - blinkStart;
         const blinkPeriodMs = elapsedMs >= fastBlinkStartMs ? 250 : 500;
         if(isNodeVisibleForPackets(marker)){
+            // With reduce motion on, hold the highlight steady instead of blinking.
+            const lit = reduceMotion.matches || Math.floor(elapsedMs / blinkPeriodMs)%2===0;
             marker.setStyle({
-                fillColor: Math.floor(elapsedMs / blinkPeriodMs)%2===0
-                    ? blinkColor
-                    : marker.originalColor
+                fillColor: lit ? blinkColor : marker.originalColor
             });
             marker.bringToFront();
         } else {
@@ -980,10 +1138,15 @@ function createChannelFilters(){
 
         filterContainer.appendChild(cb);
 
+        // A color dot next to plain text keeps the name readable whatever the channel color is.
         const label=document.createElement("label");
         label.htmlFor=cb.id;
-        label.innerText=channel;
-        label.style.color = hashToColor(channel);
+        const swatch=document.createElement("span");
+        swatch.className="channel-swatch";
+        swatch.setAttribute("aria-hidden", "true");
+        swatch.style.backgroundColor = hashToColor(channel);
+        label.appendChild(swatch);
+        label.appendChild(document.createTextNode(channel));
         filterContainer.appendChild(label);
     });
 
@@ -1048,13 +1211,14 @@ function shareCurrentView() {
 
     navigator.clipboard.writeText(url).then(()=>{
         const btn = document.getElementById('share-button');
-        const old = btn.textContent;
-        btn.textContent = '✓ ' + (mapTranslations.link_copied || 'Link Copied!');
-        btn.style.backgroundColor = '#2196F3';
+        const label = btn.querySelector('.btn-label');
+        const old = label.textContent;
+        label.textContent = mapTranslations.link_copied || 'Link Copied!';
+        btn.classList.add('copied');
 
         setTimeout(()=>{
-            btn.textContent = old;
-            btn.style.backgroundColor = '#4CAF50';
+            label.textContent = old;
+            btn.classList.remove('copied');
         }, 2000);
     });
 }

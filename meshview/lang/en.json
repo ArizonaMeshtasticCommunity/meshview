@@ -118,7 +118,9 @@
       "no": "No",
       "link_copied": "Link Copied!",
       "legend_traceroute": "Traceroute (with arrows)",
-      "legend_neighbor": "Neighbor"
+      "legend_neighbor": "Neighbor",
+      "colorblind_mode": "Colorblind-safe colors",
+      "compact_view": "Compact view"
 
     },
 

@@ -116,7 +116,9 @@
     "no": "No",
     "link_copied": "¡Enlace copiado!",
     "legend_traceroute": "Ruta de traceroute (flechas de dirección)",
-    "legend_neighbor": "Vínculo de vecinos"
+    "legend_neighbor": "Vínculo de vecinos",
+    "colorblind_mode": "Colores aptos para daltónicos",
+    "compact_view": "Vista compacta"
   },
 
   "stats": {
